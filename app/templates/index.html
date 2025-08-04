@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <link rel="icon" type="image/png" href="{{ url_for('static', filename='images/logo.png') }}">
+  <link rel="icon" href="{{ url_for('static', path='images/favicon.ico') }}" type="image/murf-icon">
+
+
   <title>Murf AI Voice Agent - Day 1</title>
 </head>
 <body>
@@ -11,7 +13,6 @@
   <p>Project setup complete</p>
 
   <button id="test-btn">Run JS Test</button>
-
-  <script src="{{url_for('static',filename='JS/script.js') }}"></script>
+<script src="{{ url_for('static', path='JS/script.js') }}"></script>
 </body>
 </html>
