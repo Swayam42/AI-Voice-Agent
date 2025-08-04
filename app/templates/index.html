@@ -3,16 +3,24 @@
 <head>
   <meta charset="UTF-8">
   <link rel="icon" href="{{ url_for('static', path='images/favicon.ico') }}" type="image/murf-icon">
+  <link rel="stylesheet" href="{{ url_for('static', path='css/style.css') }}">
+  <title>Murf AI Voice Agent - Day 3</title>
 
-
-  <title>Murf AI Voice Agent - Day 1</title>
 </head>
 <body>
-  
-  <h1>Day 1: Building an AI Voice Agent with Murf AI</h1>
-  <p>Project setup complete</p>
+  <div class="container">
+    <h1>Day 3: Playing back TTS Audio</h1>
 
-  <button id="test-btn">Run JS Test</button>
-<script src="{{ url_for('static', path='JS/script.js') }}"></script>
+    <input type="text" id="textInput" placeholder="Type something...">
+    <button id="submitBtn">Submit</button>
+
+    <div id="audioPlayer">
+      <p>Audio:</p>
+      <audio id="audio" controls></audio>
+      <p id="status"></p>
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', path='JS/script.js') }}"></script>
 </body>
 </html>
