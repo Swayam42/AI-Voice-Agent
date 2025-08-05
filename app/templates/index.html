@@ -4,12 +4,26 @@
   <meta charset="UTF-8">
   <link rel="icon" href="{{ url_for('static', path='images/favicon.ico') }}" type="image/murf-icon">
   <link rel="stylesheet" href="{{ url_for('static', path='css/style.css') }}">
-  <title>Murf AI Voice Agent - Day 3</title>
-
+  <title>Murf AI Voice Agent - Day 4</title>
+  <style>
+    .record-icon {
+      color: red;
+      font-size: 1.5em;
+      vertical-align: middle;
+      margin-right: 5px;
+      transition: opacity 0.3s;
+    }
+    .blinking {
+      animation: blink 1s steps(2, start) infinite;
+    }
+    @keyframes blink {
+      to { opacity: 0; }
+    }
+  </style>
 </head>
 <body>
   <div class="container">
-    <h1>Day 3: Playing back TTS Audio</h1>
+    <h1>Playing back TTS Audio</h1>
 
     <input type="text" id="textInput" placeholder="Type something...">
     <button id="submitBtn">Submit</button>
@@ -18,9 +32,42 @@
       <p>Audio:</p>
       <audio id="audio" controls></audio>
       <p id="status"></p>
+
+      <div id="echo-bot">
+        <h1>Day 4 : Echo Bot</h1>
+        <button id="toggleRecording"><span class="record-icon" id="recordDot">●</span> Start Recording</button>
+        <button id="pauseRecording">Pause</button><br><br>
+        <audio id="echoAudio" controls></audio>
+        <p id="echoStatus"></p>
+      </div>
     </div>
   </div>
 
+  <script>
+    // Blinking record icon logic
+    document.addEventListener('DOMContentLoaded', function() {
+      const toggleBtn = document.getElementById('toggleRecording');
+      let isRecording = false;
+      function setBlinking(state) {
+        const recordDot = document.getElementById('recordDot');
+        if (recordDot) {
+          if (state) {
+            recordDot.classList.add('blinking');
+            toggleBtn.innerHTML = '<span class="record-icon blinking" id="recordDot">●</span> Stop Recording';
+          } else {
+            recordDot.classList.remove('blinking');
+            toggleBtn.innerHTML = '<span class="record-icon" id="recordDot">●</span> Start Recording';
+          }
+        }
+      }
+      if (toggleBtn) {
+        toggleBtn.addEventListener('click', function() {
+          isRecording = !isRecording;
+          setBlinking(isRecording);
+        });
+      }
+    });
+  </script>
   <script src="{{ url_for('static', path='JS/script.js') }}"></script>
 </body>
 </html>
