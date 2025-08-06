@@ -1,3 +1,14 @@
+// Function to format file size in a human-readable format
+function formatFileSize(bytes) {
+  if (bytes === 0) return '0 Bytes';
+  
+  const k = 1024;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
 // Wait for the page to load
 document.addEventListener('DOMContentLoaded', () => {
   const textInput = document.getElementById('textInput');
@@ -65,7 +76,9 @@ document.addEventListener('DOMContentLoaded', () => {
   function toggleEchoRecording() {
     if (!isRecording) {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        echoStatus.textContent = "getUserMedia not supported on your browser!";
+        if (echoStatus) {
+          echoStatus.textContent = "getUserMedia not supported on your browser!";
+        }
         console.log("getUserMedia not supported on your browser!");
         return;
       }
@@ -80,28 +93,65 @@ document.addEventListener('DOMContentLoaded', () => {
             console.log("Audio chunk captured:", event.data.size);
           };
 
-          mediaRecorder.onstop = () => {
+          mediaRecorder.onstop = async () => {
             console.log("recorder stopped");
             const audioBlob = new Blob(audioChunks, { type: 'audio/ogg; codecs=opus' });
             const audioUrl = window.URL.createObjectURL(audioBlob);
             echoAudio.src = audioUrl;
-            echoStatus.textContent = "Recording stopped";
+            if (echoStatus) {
+              echoStatus.textContent = "Uploading...";
+            }
             stream.getTracks().forEach(track => track.stop());
-            toggleRecording.textContent = "Start Recording";
+            toggleRecording.innerHTML = '<span class="record-icon" id="recordDot">●</span> Start Recording';
             isRecording = false;
             pauseRecording.disabled = true;
+
+            // Upload audio blob to server
+            const formData = new FormData();
+            formData.append('file', audioBlob, 'echo_recording.ogg');
+            console.log('Uploading file:', audioBlob.size, 'bytes');
+            try {
+              const response = await fetch('/upload-audio', {
+                method: 'POST',
+                body: formData
+              });
+              console.log('Upload response status:', response.status);
+              if (!response.ok) {
+                const errorText = await response.text();
+                console.error('Upload error response:', errorText);
+                throw new Error(`Upload failed: ${response.status} - ${errorText}`);
+              }
+              const result = await response.json();
+              console.log('Upload result:', result);
+              // Show upload info directly in echoStatus for reliability
+              if (echoStatus) {
+                echoStatus.innerHTML = 'Upload successful ✅<br>' +
+                  '<b>File:</b> ' + result.filename + '<br>' +
+                  '<b>Type:</b> ' + result.content_type + '<br>' +
+                  '<b>Size:</b> ' + formatFileSize(result.file_size);
+              }
+            } catch (err) {
+              if (echoStatus) {
+                echoStatus.innerHTML = 'Upload failed ❌<br>' + err.message;
+              }
+              console.error('Upload error:', err);
+            }
           };
 
           mediaRecorder.start();
           console.log("recorder state:", mediaRecorder.state);
           console.log("recorder started");
-          echoStatus.textContent = "Recording...";
-          toggleRecording.textContent = "Stop Recording";
+          if (echoStatus) {
+            echoStatus.textContent = "Recording...";
+          }
+          toggleRecording.innerHTML = '<span class="record-icon blinking" id="recordDot">●</span> Stop Recording';
           isRecording = true;
           pauseRecording.disabled = false;
         })
         .catch(err => {
-          echoStatus.textContent = `Microphone error: ${err.name} - ${err.message}`;
+          if (echoStatus) {
+            echoStatus.textContent = `Microphone error: ${err.name} - ${err.message}`;
+          }
           console.error("Microphone error:", err);
         });
     } else {
@@ -118,12 +168,16 @@ document.addEventListener('DOMContentLoaded', () => {
     if (mediaRecorder && mediaRecorder.state === 'recording') {
       mediaRecorder.pause();
       console.log("recorder paused");
-      echoStatus.textContent = "Recording paused...";
+      if (echoStatus) {
+        echoStatus.textContent = "Recording paused...";
+      }
       pauseRecording.textContent = "Resume";
     } else if (mediaRecorder && mediaRecorder.state === 'paused') {
       mediaRecorder.resume();
       console.log("recorder resumed");
-      echoStatus.textContent = "Recording...";
+      if (echoStatus) {
+        echoStatus.textContent = "Recording...";
+      }
       pauseRecording.textContent = "Pause";
     }
   }

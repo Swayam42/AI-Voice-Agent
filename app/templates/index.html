@@ -2,9 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <link rel="icon" href="{{ url_for('static', path='images/favicon.ico') }}" type="image/murf-icon">
-  <link rel="stylesheet" href="{{ url_for('static', path='css/style.css') }}">
-  <title>Murf AI Voice Agent - Day 4</title>
+  <link rel="icon" href="/static/images/favicon.ico" type="image/murf-icon">
+  <link rel="stylesheet" href="/static/css/style.css">
+  <title>Murf AI Voice Agent - Day 5</title>
   <style>
     .record-icon {
       color: red;
@@ -19,6 +19,7 @@
     @keyframes blink {
       to { opacity: 0; }
     }
+    
   </style>
 </head>
 <body>
@@ -34,11 +35,15 @@
       <p id="status"></p>
 
       <div id="echo-bot">
-        <h1>Day 4 : Echo Bot</h1>
+        <h1>Echo Bot</h1>
         <button id="toggleRecording"><span class="record-icon" id="recordDot">●</span> Start Recording</button>
         <button id="pauseRecording">Pause</button><br><br>
         <audio id="echoAudio" controls></audio>
-        <p id="echoStatus"></p>
+        <p id="echoStatus"><span style="font-weight:bold;">Upload Status:</span> <span id="uploadInfo" style="display:inline-block;vertical-align:middle;"></span></p>
+        <div id="fileDetails" style="margin-top: 10px; padding: 10px; border: 1px solid #ddd; border-radius: 5px; display: none;">
+          <h3>File Details</h3>
+          <div id="fileSize"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -68,6 +73,6 @@
       }
     });
   </script>
-  <script src="{{ url_for('static', path='JS/script.js') }}"></script>
+  <script src="/static/JS/script.js"></script>
 </body>
 </html>
