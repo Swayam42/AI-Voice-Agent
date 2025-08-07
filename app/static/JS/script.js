@@ -99,42 +99,38 @@ document.addEventListener('DOMContentLoaded', () => {
             const audioUrl = window.URL.createObjectURL(audioBlob);
             echoAudio.src = audioUrl;
             if (echoStatus) {
-              echoStatus.textContent = "Uploading...";
+              echoStatus.textContent = "Transcribing...";
             }
             stream.getTracks().forEach(track => track.stop());
             toggleRecording.innerHTML = '<span class="record-icon" id="recordDot">●</span> Start Recording';
             isRecording = false;
             pauseRecording.disabled = true;
 
-            // Upload audio blob to server
+            // Send audio to transcribe endpoint
             const formData = new FormData();
             formData.append('file', audioBlob, 'echo_recording.ogg');
             console.log('Uploading file:', audioBlob.size, 'bytes');
             try {
-              const response = await fetch('/upload-audio', {
+              const response = await fetch('/transcribe/file', {
                 method: 'POST',
                 body: formData
               });
-              console.log('Upload response status:', response.status);
+              console.log('Transcription response status:', response.status);
               if (!response.ok) {
-                const errorText = await response.text();
-                console.error('Upload error response:', errorText);
-                throw new Error(`Upload failed: ${response.status} - ${errorText}`);
+                throw new Error(`Transcription failed: ${response.status}`);
               }
               const result = await response.json();
-              console.log('Upload result:', result);
-              // Show upload info directly in echoStatus for reliability
+              console.log('Transcription result:', result);
+
               if (echoStatus) {
-                echoStatus.innerHTML = 'Upload successful ✅<br>' +
-                  '<b>File:</b> ' + result.filename + '<br>' +
-                  '<b>Type:</b> ' + result.content_type + '<br>' +
-                  '<b>Size:</b> ' + formatFileSize(result.file_size);
+                echoStatus.innerHTML = 'Transcription successful ✅<br>' +
+                  '<b>Text:</b> ' + result.transcription;
               }
             } catch (err) {
               if (echoStatus) {
-                echoStatus.innerHTML = 'Upload failed ❌<br>' + err.message;
+                echoStatus.innerHTML = 'Transcription failed ❌<br>' + err.message;
               }
-              console.error('Upload error:', err);
+              console.error('Transcription error:', err);
             }
           };
 

@@ -5,11 +5,17 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import requests
 import os
-import shutil
-from pathlib import Path
 from dotenv import load_dotenv
+import assemblyai as aai
+import time
+
 # Load environment variables
 load_dotenv()
+
+# Configure AssemblyAI API key globally
+aai.settings.api_key = os.getenv("ASSEMBLYAI_API_KEY")
+if not aai.settings.api_key:
+    raise ValueError("ASSEMBLYAI_API_KEY not found in .env file")
 
 app = FastAPI()
 
@@ -22,11 +28,6 @@ if not MURF_API_KEY:
 # Mount static files and templates
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
-
-# Create uploads directory if it doesn't exist
-UPLOADS_DIR = os.path.join(os.path.dirname(__file__), "uploads")
-if not os.path.exists(UPLOADS_DIR):
-    os.makedirs(UPLOADS_DIR)
 
 class TextInput(BaseModel):
     text: str
@@ -64,34 +65,58 @@ async def upload_audio(file: UploadFile = File(...)):
     try:
         print(f"Received file: {file.filename}, type: {file.content_type}")
         
-        # Ensure uploads directory exists
-        os.makedirs(UPLOADS_DIR, exist_ok=True)
-        
-        # Create a unique filename
-        file_extension = os.path.splitext(file.filename or "recording.ogg")[1] or ".ogg"
-        unique_filename = f"recording_{os.urandom(4).hex()}{file_extension}"
-        file_path = os.path.join(UPLOADS_DIR, unique_filename)
-        
-        print(f"Saving to: {file_path}")
-        
-        # Save the file
+        # Read file content
         file_content = await file.read()
-        with open(file_path, "wb") as buffer:
-            buffer.write(file_content)
+        file_size = len(file_content)
         
-        # Get file size
-        file_size = os.path.getsize(file_path)
-        
-        print(f"File saved successfully: {unique_filename}, size: {file_size} bytes")
+        print(f"File received successfully: {file.filename}, size: {file_size} bytes")
         
         return {
-            "filename": unique_filename,
+            "filename": file.filename,
             "content_type": file.content_type or "audio/ogg",
             "file_size": file_size
         }
     except Exception as e:
         print(f"Upload error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+@app.post("/transcribe/file")
+async def transcribe_file(file: UploadFile = File(...)):
+    try:
+        # Read the uploaded file content as binary data
+        audio_data = await file.read()
+        print(f"Received audio data for transcription, size: {len(audio_data)} bytes")
+
+        # Initialize AssemblyAI transcriber with configuration
+        config = aai.TranscriptionConfig(speech_model=aai.SpeechModel.best)
+        transcriber = aai.Transcriber(config=config)
+
+        # Transcribe the binary audio data directly
+        transcript = transcriber.transcribe(audio_data)
+
+        # Check transcription status
+        if transcript.status == aai.TranscriptStatus.error:
+            error_detail = transcript.error or "Unknown error"
+            raise HTTPException(status_code=500, detail=f"Transcription failed: {error_detail}")
+
+        # Wait for transcription to complete with a timeout
+        start_time = time.time()
+        while transcript.status not in [aai.TranscriptStatus.completed, aai.TranscriptStatus.error]:
+            if time.time() - start_time > 30:  # 30-second timeout
+                raise HTTPException(status_code=500, detail="Transcription timeout")
+            transcript = transcriber.get_transcript(transcript.id)
+            print(f"Transcription status: {transcript.status}")
+            time.sleep(1)  # Poll every second
+
+        if transcript.status == aai.TranscriptStatus.completed:
+            transcription_text = transcript.text
+        else:
+            raise HTTPException(status_code=500, detail="Transcription did not complete successfully")
+
+        return {"transcription": transcription_text}
+    except Exception as e:
+        print(f"Transcription error details: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Transcription error: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
