@@ -49,9 +49,10 @@ async def home(request: Request):
 async def generate_audio(input: TextInput):
     headers = {"api-key": MURF_API_KEY, "Content-Type": "application/json"}
     payload = input.dict()
-
     try:
+        print(f"Generating audio with payload: {payload}")
         response = requests.post(MURF_API_URL, headers=headers, json=payload)
+        print(f"Murf response status: {response.status_code}, text: {response.text}")
         response.raise_for_status()
         audio_url = response.json().get("audioFile", "")
         if not audio_url:
@@ -64,13 +65,9 @@ async def generate_audio(input: TextInput):
 async def upload_audio(file: UploadFile = File(...)):
     try:
         print(f"Received file: {file.filename}, type: {file.content_type}")
-        
-        # Read file content
         file_content = await file.read()
         file_size = len(file_content)
-        
         print(f"File received successfully: {file.filename}, size: {file_size} bytes")
-        
         return {
             "filename": file.filename,
             "content_type": file.content_type or "audio/ogg",
@@ -83,40 +80,74 @@ async def upload_audio(file: UploadFile = File(...)):
 @app.post("/transcribe/file")
 async def transcribe_file(file: UploadFile = File(...)):
     try:
-        # Read the uploaded file content as binary data
         audio_data = await file.read()
         print(f"Received audio data for transcription, size: {len(audio_data)} bytes")
-
-        # Initialize AssemblyAI transcriber with configuration
         config = aai.TranscriptionConfig(speech_model=aai.SpeechModel.best)
         transcriber = aai.Transcriber(config=config)
-
-        # Transcribe the binary audio data directly
         transcript = transcriber.transcribe(audio_data)
-
-        # Check transcription status
-        if transcript.status == aai.TranscriptStatus.error:
-            error_detail = transcript.error or "Unknown error"
-            raise HTTPException(status_code=500, detail=f"Transcription failed: {error_detail}")
-
-        # Wait for transcription to complete with a timeout
         start_time = time.time()
         while transcript.status not in [aai.TranscriptStatus.completed, aai.TranscriptStatus.error]:
-            if time.time() - start_time > 30:  # 30-second timeout
+            if time.time() - start_time > 30:
                 raise HTTPException(status_code=500, detail="Transcription timeout")
             transcript = transcriber.get_transcript(transcript.id)
             print(f"Transcription status: {transcript.status}")
-            time.sleep(1)  # Poll every second
-
-        if transcript.status == aai.TranscriptStatus.completed:
-            transcription_text = transcript.text
-        else:
-            raise HTTPException(status_code=500, detail="Transcription did not complete successfully")
-
+            time.sleep(1)
+        if transcript.status == aai.TranscriptStatus.error:
+            error_detail = transcript.error or "Unknown error"
+            raise HTTPException(status_code=500, detail=f"Transcription failed: {error_detail}")
+        if transcript.status != aai.TranscriptStatus.completed:
+            raise HTTPException(status_code=500, detail="Transcription did not complete")
+        transcription_text = transcript.text
         return {"transcription": transcription_text}
     except Exception as e:
         print(f"Transcription error details: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Transcription error: {str(e)}")
+
+@app.post("/tts/echo")
+async def tts_echo(file: UploadFile = File(...)):
+    try:
+        audio_data = await file.read()
+        print(f"Received audio data, size: {len(audio_data)} bytes")
+        config = aai.TranscriptionConfig(speech_model=aai.SpeechModel.best)
+        transcriber = aai.Transcriber(config=config)
+        transcript = transcriber.transcribe(audio_data)
+        start_time = time.time()
+        while transcript.status not in [aai.TranscriptStatus.completed, aai.TranscriptStatus.error]:
+            if time.time() - start_time > 30:
+                raise HTTPException(status_code=500, detail="Transcription timeout")
+            transcript = transcriber.get_transcript(transcript.id)
+            print(f"Transcription status: {transcript.status}")
+            time.sleep(1)
+        if transcript.status == aai.TranscriptStatus.error:
+            print(f"Transcription error: {transcript.error}")
+            raise HTTPException(status_code=500, detail=transcript.error or "Transcription failed")
+        if transcript.status != aai.TranscriptStatus.completed:
+            raise HTTPException(status_code=500, detail="Transcription did not complete")
+        text = transcript.text or ""
+        print(f"Transcribed text: '{text}'")
+        if not text.strip():
+            raise HTTPException(status_code=400, detail="Empty transcription")
+        headers = {"api-key": MURF_API_KEY, "Content-Type": "application/json"}
+        payload = {
+            "text": text,
+            "voiceId": "en-US-charles",
+            "style": "Conversational",
+            "multiNativeLocale": "hi-IN"
+        }
+        print(f"Murf payload: {payload}")
+        response = requests.post(MURF_API_URL, headers=headers, json=payload)
+        print(f"Murf response status: {response.status_code}, text: {response.text}")
+        response.raise_for_status()
+        audio_url = response.json().get("audioFile", "")
+        if not audio_url:
+            raise HTTPException(status_code=500, detail="No audio file returned")
+        return {"audio_url": audio_url, "transcription": text}
+    except requests.exceptions.RequestException as e:
+        print(f"Murf API error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        print(f"Unexpected error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

@@ -96,11 +96,7 @@ document.addEventListener('DOMContentLoaded', () => {
           mediaRecorder.onstop = async () => {
             console.log("recorder stopped");
             const audioBlob = new Blob(audioChunks, { type: 'audio/ogg; codecs=opus' });
-            const audioUrl = window.URL.createObjectURL(audioBlob);
-            echoAudio.src = audioUrl;
-            if (echoStatus) {
-              echoStatus.textContent = "Transcribing...";
-            }
+            if (echoStatus) echoStatus.textContent = "Processing...";
             stream.getTracks().forEach(track => track.stop());
             toggleRecording.innerHTML = '<span class="record-icon" id="recordDot">●</span> Start Recording';
             isRecording = false;
@@ -111,7 +107,7 @@ document.addEventListener('DOMContentLoaded', () => {
             formData.append('file', audioBlob, 'echo_recording.ogg');
             console.log('Uploading file:', audioBlob.size, 'bytes');
             try {
-              const response = await fetch('/transcribe/file', {
+              const response = await fetch('/tts/echo', {
                 method: 'POST',
                 body: formData
               });
@@ -122,10 +118,11 @@ document.addEventListener('DOMContentLoaded', () => {
               const result = await response.json();
               console.log('Transcription result:', result);
 
-              if (echoStatus) {
-                echoStatus.innerHTML = 'Transcription successful ✅<br>' +
-                  '<b>Text:</b> ' + result.transcription;
+              if (echoAudio && result.audio_url) {
+                echoAudio.src = result.audio_url;
+                echoAudio.play().catch(() => {});
               }
+              if (echoStatus) echoStatus.innerHTML = 'Transcripted ✅<br><b>Text:</b> ' + (result.transcription || '');
             } catch (err) {
               if (echoStatus) {
                 echoStatus.innerHTML = 'Transcription failed ❌<br>' + err.message;
