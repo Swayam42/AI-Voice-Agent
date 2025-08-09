@@ -8,14 +8,20 @@ import os
 from dotenv import load_dotenv
 import assemblyai as aai
 import time
+import google.generativeai as genai
 
 # Load environment variables
 load_dotenv()
 
-# Configure AssemblyAI API key globally
+# Configure API keys globally
 aai.settings.api_key = os.getenv("ASSEMBLYAI_API_KEY")
 if not aai.settings.api_key:
     raise ValueError("ASSEMBLYAI_API_KEY not found in .env file")
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+    raise ValueError("GEMINI_API_KEY not found in .env file")
+genai.configure(api_key=GEMINI_API_KEY)
 
 app = FastAPI()
 
@@ -35,6 +41,9 @@ class TextInput(BaseModel):
     languageCode: str = "en-US"
     style: str = "Conversational"
     multiNativeLocale: str = "hi-IN"
+
+class LLMQuery(BaseModel):
+    query: str
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
@@ -148,6 +157,18 @@ async def tts_echo(file: UploadFile = File(...)):
     except Exception as e:
         print(f"Unexpected error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/llm/query")
+async def llm_query(query_data: LLMQuery):
+    try:
+        print(f"Received LLM query: {query_data.query}")
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content(query_data.query)
+        print(f"LLM response: {response.text}")
+        return {"response": response.text}
+    except Exception as e:
+        print(f"LLM query error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"LLM query failed: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
