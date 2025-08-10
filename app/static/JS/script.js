@@ -9,62 +9,55 @@ function formatFileSize(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
-// Wait for the page to load
 document.addEventListener('DOMContentLoaded', () => {
   const textInput = document.getElementById('textInput');
   const submitButton = document.getElementById('submitBtn');
   const audio = document.getElementById('audio');
   const status = document.getElementById('status');
-
-  // Echo Bot elements
   const toggleRecording = document.getElementById('toggleRecording');
   const pauseRecording = document.getElementById('pauseRecording');
   const echoAudio = document.getElementById('echoAudio');
   const echoStatus = document.getElementById('echoStatus');
+  const llmToggleRecording = document.getElementById('llmToggleRecording');
+  const llmPauseRecording = document.getElementById('llmPauseRecording');
+  const llmAudio = document.getElementById('llmAudio');
+  const llmStatus = document.getElementById('llmStatus');
 
   // Debug: Log elements to ensure they exist
-  console.log("Elements:", { textInput, submitButton, audio, status, toggleRecording, pauseRecording, echoAudio, echoStatus });
+  console.log("Elements:", {
+    textInput, submitButton, audio, status,
+    toggleRecording, pauseRecording, echoAudio, echoStatus,
+    llmToggleRecording, llmPauseRecording, llmAudio, llmStatus
+  });
 
   let mediaRecorder;
+  let llmMediaRecorder;
   let audioChunks = [];
+  let llmAudioChunks = [];
   let isRecording = false;
+  let isLlmRecording = false;
 
-  // Function to generate and play TTS audio
   async function generateAudio() {
     const text = textInput.value;
     if (!text) {
-      status.textContent = "Please enter some text!";
+      status.textContent = "Please enter text!";
       return;
     }
-
     status.textContent = "Generating audio...";
-    audio.src = ""; // Clear previous audio
-    console.log("Generating audio for:", text);
-
+    audio.src = "";
     try {
       const response = await fetch('/generate_audio', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: text,
-          voiceId: "en-US-charles",
-          style: "Conversational",
-          multiNativeLocale: "hi-IN"
-        })
+        body: JSON.stringify({ text, voiceId: "en-US-charles", style: "Conversational" })
       });
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
       const data = await response.json();
-      console.log("Response data:", data);
-      if (data.error) {
-        status.textContent = data.error;
-      } else {
+      if (response.ok) {
         audio.src = data.audio_url;
-        status.textContent = "Audio ready! Click play.";
-        audio.play().catch(err => status.textContent = "Error playing audio: " + err);
+        status.textContent = "Audio ready!";
+        audio.play().catch(() => status.textContent = "Error playing audio");
+      } else {
+        status.textContent = "Error: " + (data.detail || response.statusText);
       }
     } catch (error) {
       status.textContent = "Error: " + error.message;
@@ -72,135 +65,168 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // Function to toggle recording
   function toggleEchoRecording() {
     if (!isRecording) {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        if (echoStatus) {
-          echoStatus.textContent = "getUserMedia not supported on your browser!";
-        }
-        console.log("getUserMedia not supported on your browser!");
-        return;
-      }
-
       navigator.mediaDevices.getUserMedia({ audio: true })
         .then(stream => {
           mediaRecorder = new MediaRecorder(stream);
           audioChunks = [];
-
-          mediaRecorder.ondataavailable = (event) => {
-            audioChunks.push(event.data);
-            console.log("Audio chunk captured:", event.data.size);
-          };
-
+          mediaRecorder.ondataavailable = event => audioChunks.push(event.data);
           mediaRecorder.onstop = async () => {
-            console.log("recorder stopped");
             const audioBlob = new Blob(audioChunks, { type: 'audio/ogg; codecs=opus' });
-            if (echoStatus) echoStatus.textContent = "Processing...";
+            echoStatus.textContent = "Generating Murf audio...";
             stream.getTracks().forEach(track => track.stop());
-            toggleRecording.innerHTML = '<span class="record-icon" id="recordDot">●</span> Start Recording';
+            toggleRecording.textContent = "Start Recording";
             isRecording = false;
             pauseRecording.disabled = true;
 
-            // Send audio to transcribe endpoint
             const formData = new FormData();
             formData.append('file', audioBlob, 'echo_recording.ogg');
-            console.log('Uploading file:', audioBlob.size, 'bytes');
             try {
-              const response = await fetch('/tts/echo', {
-                method: 'POST',
-                body: formData
-              });
-              console.log('Transcription response status:', response.status);
-              if (!response.ok) {
-                throw new Error(`Transcription failed: ${response.status}`);
-              }
+              const response = await fetch('/tts/echo', { method: 'POST', body: formData });
               const result = await response.json();
-              console.log('Transcription result:', result);
-
-              if (echoAudio && result.audio_url) {
+              if (response.ok) {
                 echoAudio.src = result.audio_url;
-                echoAudio.play().catch(() => {});
+                echoStatus.innerHTML = `Murf audio ready!<br><b>Transcription:</b> ${result.transcription || 'N/A'}`;
+                echoAudio.play().catch(() => echoStatus.textContent = "Error playing audio");
+              } else {
+                echoStatus.textContent = "Error: " + (result.detail || response.statusText);
               }
-              if (echoStatus) echoStatus.innerHTML = 'Transcripted ✅<br><b>Text:</b> ' + (result.transcription || '');
-            } catch (err) {
-              if (echoStatus) {
-                echoStatus.innerHTML = 'Transcription failed ❌<br>' + err.message;
-              }
-              console.error('Transcription error:', err);
+            } catch (error) {
+              echoStatus.textContent = "Error: " + error.message;
+              console.error("Fetch error:", error);
             }
           };
-
           mediaRecorder.start();
-          console.log("recorder state:", mediaRecorder.state);
-          console.log("recorder started");
-          if (echoStatus) {
-            echoStatus.textContent = "Recording...";
-          }
-          toggleRecording.innerHTML = '<span class="record-icon blinking" id="recordDot">●</span> Stop Recording';
+          echoStatus.textContent = "Recording...";
+          toggleRecording.textContent = "Stop Recording";
           isRecording = true;
           pauseRecording.disabled = false;
         })
         .catch(err => {
-          if (echoStatus) {
-            echoStatus.textContent = `Microphone error: ${err.name} - ${err.message}`;
-          }
+          echoStatus.textContent = "Microphone error: " + err.message;
           console.error("Microphone error:", err);
         });
     } else {
-      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-        mediaRecorder.stop();
-        console.log("recorder state:", mediaRecorder.state);
-        console.log("recorder stopped");
-      }
+      mediaRecorder.stop();
     }
   }
 
-  // Function to pause/resume recording
   function pauseEchoRecording() {
     if (mediaRecorder && mediaRecorder.state === 'recording') {
       mediaRecorder.pause();
-      console.log("recorder paused");
-      if (echoStatus) {
-        echoStatus.textContent = "Recording paused...";
-      }
+      echoStatus.textContent = "Paused...";
       pauseRecording.textContent = "Resume";
     } else if (mediaRecorder && mediaRecorder.state === 'paused') {
       mediaRecorder.resume();
-      console.log("recorder resumed");
-      if (echoStatus) {
-        echoStatus.textContent = "Recording...";
-      }
+      echoStatus.textContent = "Recording...";
       pauseRecording.textContent = "Pause";
     }
   }
 
-  // Add click events
+  async function toggleLlmRecording() {
+    if (!isLlmRecording) {
+      if (!llmToggleRecording) {
+        console.error("LLM Toggle Recording button not found!");
+        llmStatus.textContent = "Error: Recording button not found!";
+        return;
+      }
+      console.log("Starting LLM recording...");
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        llmMediaRecorder = new MediaRecorder(stream);
+        llmAudioChunks = [];
+        llmMediaRecorder.ondataavailable = event => llmAudioChunks.push(event.data);
+        llmMediaRecorder.onstop = async () => {
+          const audioBlob = new Blob(llmAudioChunks, { type: 'audio/ogg; codecs=opus' });
+          llmStatus.textContent = "Processing LLM query...";
+          stream.getTracks().forEach(track => track.stop());
+          llmToggleRecording.textContent = "Start Recording";
+          isLlmRecording = false;
+          llmPauseRecording.disabled = true;
+
+          const formData = new FormData();
+          formData.append('file', audioBlob, 'llm_recording.ogg');
+          try {
+            const response = await fetch('/llm/query', { method: 'POST', body: formData });
+            const result = await response.json();
+            if (response.ok) {
+              llmAudio.src = result.audio_url;
+              llmStatus.textContent = "LLM audio ready!";
+              llmAudio.play().catch(() => llmStatus.textContent = "Error playing audio");
+
+              // Show transcribed text and LLM response
+              const llmTranscribedText = document.getElementById('llmTranscribedText');
+              const llmResponseText = document.getElementById('llmResponseText');
+              if (llmTranscribedText) {
+                llmTranscribedText.textContent = result.transcribed_text || '';
+              }
+              if (llmResponseText) {
+                llmResponseText.textContent = result.llm_response || '';
+              }
+            } else {
+              llmStatus.textContent = "Error: " + (result.detail || response.statusText);
+            }
+          } catch (error) {
+            llmStatus.textContent = "Error: " + error.message;
+            console.error("Fetch error:", error);
+          }
+        };
+        llmMediaRecorder.start();
+        llmStatus.textContent = "Recording...";
+        llmToggleRecording.textContent = "Stop Recording";
+        isLlmRecording = true;
+        llmPauseRecording.disabled = false;
+      } catch (err) {
+        llmStatus.textContent = "Microphone error: " + err.message;
+        console.error("Microphone error:", err);
+      }
+    } else {
+      if (llmMediaRecorder && llmMediaRecorder.state !== 'inactive') {
+        llmMediaRecorder.stop();
+        console.log("LLM recorder stopped");
+      }
+    }
+  }
+
+  function pauseLlmRecording() {
+    if (llmMediaRecorder && llmMediaRecorder.state === 'recording') {
+      llmMediaRecorder.pause();
+      llmStatus.textContent = "Paused...";
+      llmPauseRecording.textContent = "Resume";
+    } else if (llmMediaRecorder && llmMediaRecorder.state === 'paused') {
+      llmMediaRecorder.resume();
+      llmStatus.textContent = "Recording...";
+      llmPauseRecording.textContent = "Pause";
+    }
+  }
+
+  // Add click events with error handling
   if (submitButton) {
-    submitButton.addEventListener('click', () => {
-      console.log('Submit button clicked!');
-      generateAudio();
-    });
+    submitButton.addEventListener('click', generateAudio);
   } else {
-    console.error("Submit button not found! Check the button ID in index.html.");
+    console.error("Submit button not found!");
   }
-
   if (toggleRecording) {
-    toggleRecording.addEventListener('click', () => {
-      console.log('Toggle recording clicked!');
-      toggleEchoRecording();
-    });
+    toggleRecording.addEventListener('click', toggleEchoRecording);
   } else {
-    console.error("Toggle recording button not found!");
+    console.error("Toggle Recording button not found!");
   }
-
   if (pauseRecording) {
-    pauseRecording.addEventListener('click', () => {
-      console.log('Pause/resume clicked!');
-      pauseEchoRecording();
-    });
-    pauseRecording.disabled = true; // Disable pause until recording starts
+    pauseRecording.addEventListener('click', pauseEchoRecording);
+    pauseRecording.disabled = true;
   } else {
-    console.error("Pause button not found!");
+    console.error("Pause Recording button not found!");
+  }
+  if (llmToggleRecording) {
+    llmToggleRecording.addEventListener('click', toggleLlmRecording);
+  } else {
+    console.error("LLM Toggle Recording button not found!");
+  }
+  if (llmPauseRecording) {
+    llmPauseRecording.addEventListener('click', pauseLlmRecording);
+    llmPauseRecording.disabled = true;
+  } else {
+    console.error("LLM Pause Recording button not found!");
   }
 });

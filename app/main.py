@@ -18,10 +18,9 @@ aai.settings.api_key = os.getenv("ASSEMBLYAI_API_KEY")
 if not aai.settings.api_key:
     raise ValueError("ASSEMBLYAI_API_KEY not found in .env file")
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if not GEMINI_API_KEY:
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+if not os.getenv("GEMINI_API_KEY"):
     raise ValueError("GEMINI_API_KEY not found in .env file")
-genai.configure(api_key=GEMINI_API_KEY)
 
 app = FastAPI()
 
@@ -41,9 +40,6 @@ class TextInput(BaseModel):
     languageCode: str = "en-US"
     style: str = "Conversational"
     multiNativeLocale: str = "hi-IN"
-
-class LLMQuery(BaseModel):
-    query: str
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
@@ -158,17 +154,79 @@ async def tts_echo(file: UploadFile = File(...)):
         print(f"Unexpected error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/llm/query")
-async def llm_query(query_data: LLMQuery):
+# Helper function for Gemini API
+def getResponsefromGemini(prompt: str) -> str:
     try:
-        print(f"Received LLM query: {query_data.query}")
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(query_data.query)
-        print(f"LLM response: {response.text}")
-        return {"response": response.text}
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        response = model.generate_content(prompt)
+        return response.text.strip()
     except Exception as e:
-        print(f"LLM query error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"LLM query failed: {str(e)}")
+        print(f"Gemini error: {e}")
+        return "Sorry, I couldn't process that."
+
+@app.post("/llm/query")
+async def llm_query(file: UploadFile = File(...)):
+    try:
+        if not file:
+            print("No file uploaded in request!")
+            raise HTTPException(status_code=400, detail="No file uploaded. Make sure the field name is 'file'.")
+        audio_bytes = await file.read()
+        print(f"Received audio data, size: {len(audio_bytes)} bytes, content_type: {file.content_type}")
+        if not audio_bytes or len(audio_bytes) < 100:
+            print("Uploaded file is empty or too small!")
+            raise HTTPException(status_code=400, detail="Uploaded file is empty or too small.")
+
+        # ...existing code...
+        config = aai.TranscriptionConfig(speech_model=aai.SpeechModel.best)
+        transcriber = aai.Transcriber(config=config)
+        transcript = transcriber.transcribe(audio_bytes)
+
+        # Wait for transcription to complete
+        start_time = time.time()
+        while transcript.status not in [aai.TranscriptStatus.completed, aai.TranscriptStatus.error]:
+            if time.time() - start_time > 30:
+                raise HTTPException(status_code=500, detail="Transcription timeout")
+            transcript = transcriber.get_transcript(transcript.id)
+            print(f"Transcription status: {transcript.status}")
+            time.sleep(1)
+
+        if transcript.status == aai.TranscriptStatus.error:
+            raise HTTPException(status_code=500, detail=f"AssemblyAI error: {transcript.error or 'Unknown error'}")
+
+        text = transcript.text
+        print(f"Transcribed text: '{text}'")
+
+        # Get response from Gemini
+        ai_reply = getResponsefromGemini(text)
+        print(f"Gemini response: '{ai_reply}'")
+
+        # Send to Murf API
+        murf_headers = {"api-key": MURF_API_KEY, "Content-Type": "application/json"}
+        murf_payload = {
+            "text": ai_reply,
+            "voiceId": "en-US-ken"
+        }
+        murf_response = requests.post(MURF_API_URL, headers=murf_headers, json=murf_payload)
+        murf_response.raise_for_status()
+        print(f"Murf response: {murf_response.json()}")
+
+        audio_url = murf_response.json().get("audioFile")
+        if not audio_url:
+            raise HTTPException(status_code=500, detail="No audio file returned from Murf")
+
+        # Return transcribed text and LLM response as well
+        return {
+            "audio_url": audio_url,
+            "transcribed_text": text,
+            "llm_response": ai_reply
+        }
+
+    except requests.exceptions.RequestException as e:
+        print(f"Murf API error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        print(f"Unexpected error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <link rel="icon" href="/static/images/favicon.ico" type="image/murf-icon">
   <link rel="stylesheet" href="/static/css/style.css">
-  <title>Murf AI Voice Agent - Day 7</title>
+  <title>Murf AI Voice Agent - Day 9</title>
   <style>
     .record-icon {
       color: red;
@@ -34,44 +34,30 @@
       <p id="status"></p>
 
       <div id="echo-bot">
-        <h1>Echo Bot - V2</h1>
+        <h1>Echo Bot</h1>
         <button id="toggleRecording"><span class="record-icon" id="recordDot">●</span> Start Recording</button>
         <button id="pauseRecording">Pause</button><br><br>
         <audio id="echoAudio" controls></audio>
-        <p id="echoStatus"><span style="font-weight:bold;">Transcription Status:</span> <span id="transcriptionResult"></span></p>
-        <div id="fileDetails" style="margin-top: 10px; padding: 10px; border: 1px solid #ddd; border-radius: 5px; display: none;">
-          <h3>File Details</h3>
-          <div id="fileInfo"></div>
+        <p id="echoStatus"></p>
+      </div>
+
+      <div id="llm-bot">
+        <h1>LLM Bot</h1>
+        <button id="llmToggleRecording"><span class="record-icon" id="llmRecordDot">●</span> Start Recording</button>
+        <button id="llmPauseRecording">Pause</button><br><br>
+        <audio id="llmAudio" controls></audio>
+        <p id="llmStatus"></p>
+        <div id="llmResults">
+          <strong>Input Text:</strong>
+          <span id="llmTranscribedText"></span>
+          <br>
+          <strong>LLM Response:</strong>
+          <span id="llmResponseText"></span>
         </div>
       </div>
     </div>
   </div>
 
-  <script>
-    // Blinking record icon logic
-    document.addEventListener('DOMContentLoaded', function() {
-      const toggleBtn = document.getElementById('toggleRecording');
-      let isRecording = false;
-      function setBlinking(state) {
-        const recordDot = document.getElementById('recordDot');
-        if (recordDot) {
-          if (state) {
-            recordDot.classList.add('blinking');
-            toggleBtn.innerHTML = '<span class="record-icon blinking" id="recordDot">●</span> Stop Recording';
-          } else {
-            recordDot.classList.remove('blinking');
-            toggleBtn.innerHTML = '<span class="record-icon" id="recordDot">●</span> Start Recording';
-          }
-        }
-      }
-      if (toggleBtn) {
-        toggleBtn.addEventListener('click', function() {
-          isRecording = !isRecording;
-          setBlinking(isRecording);
-        });
-      }
-    });
-  </script>
   <script src="/static/JS/script.js"></script>
 </body>
 </html>
