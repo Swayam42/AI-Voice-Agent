@@ -10,32 +10,47 @@ function formatFileSize(bytes) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  // Elements - TTS section
   const textInput = document.getElementById('textInput');
   const submitButton = document.getElementById('submitBtn');
   const audio = document.getElementById('audio');
   const status = document.getElementById('status');
+
+  // Echo bot
   const toggleRecording = document.getElementById('toggleRecording');
   const pauseRecording = document.getElementById('pauseRecording');
   const echoAudio = document.getElementById('echoAudio');
   const echoStatus = document.getElementById('echoStatus');
+
+  // LLM bot
   const llmToggleRecording = document.getElementById('llmToggleRecording');
   const llmPauseRecording = document.getElementById('llmPauseRecording');
   const llmAudio = document.getElementById('llmAudio');
   const llmStatus = document.getElementById('llmStatus');
+  const llmChatMessages = document.getElementById('llmChatMessages');
 
-  // Debug: Log elements to ensure they exist
-  console.log("Elements:", {
-    textInput, submitButton, audio, status,
-    toggleRecording, pauseRecording, echoAudio, echoStatus,
-    llmToggleRecording, llmPauseRecording, llmAudio, llmStatus
-  });
+  // Session management: ensure session_id is in URL query param
+  function ensureSessionId() {
+    const url = new URL(window.location.href);
+    let sid = url.searchParams.get('session_id');
+    if (!sid) {
+      sid = crypto.randomUUID();
+      url.searchParams.set('session_id', sid);
+      window.history.replaceState({}, '', url.toString());
+    }
+    return sid;
+  }
+  const sessionId = ensureSessionId();
 
-  let mediaRecorder;
-  let llmMediaRecorder;
+  // Recording state
+  let mediaRecorder; // echo
   let audioChunks = [];
-  let llmAudioChunks = [];
   let isRecording = false;
+
+  let llmMediaRecorder; // llm
+  let llmAudioChunks = [];
   let isLlmRecording = false;
+  // (no hands-free auto loop)
 
   async function generateAudio() {
     const text = textInput.value;
@@ -124,81 +139,92 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  async function toggleLlmRecording() {
+  function toggleLlmRecording() {
     if (!isLlmRecording) {
-      if (!llmToggleRecording) {
-        console.error("LLM Toggle Recording button not found!");
-        llmStatus.textContent = "Error: Recording button not found!";
-        return;
-      }
-      console.log("Starting LLM recording...");
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        llmMediaRecorder = new MediaRecorder(stream);
-        llmAudioChunks = [];
-        llmMediaRecorder.ondataavailable = event => llmAudioChunks.push(event.data);
-        llmMediaRecorder.onstop = async () => {
-          const audioBlob = new Blob(llmAudioChunks, { type: 'audio/ogg; codecs=opus' });
-          llmStatus.textContent = "Processing LLM query...";
-          stream.getTracks().forEach(track => track.stop());
-          llmToggleRecording.textContent = "Start Recording";
-          isLlmRecording = false;
-          llmPauseRecording.disabled = true;
-
-          const formData = new FormData();
-          formData.append('file', audioBlob, 'llm_recording.ogg');
-          try {
-            const response = await fetch('/llm/query', { method: 'POST', body: formData });
-            const result = await response.json();
-            if (response.ok) {
-              llmAudio.src = result.audio_url;
-              llmStatus.textContent = "LLM audio ready!";
-              llmAudio.play().catch(() => llmStatus.textContent = "Error playing audio");
-
-              // Show transcribed text and LLM response
-              const llmTranscribedText = document.getElementById('llmTranscribedText');
-              const llmResponseText = document.getElementById('llmResponseText');
-              if (llmTranscribedText) {
-                llmTranscribedText.textContent = result.transcribed_text || '';
-              }
-              if (llmResponseText) {
-                llmResponseText.textContent = result.llm_response || '';
-              }
-            } else {
-              llmStatus.textContent = "Error: " + (result.detail || response.statusText);
-            }
-          } catch (error) {
-            llmStatus.textContent = "Error: " + error.message;
-            console.error("Fetch error:", error);
-          }
-        };
-        llmMediaRecorder.start();
-        llmStatus.textContent = "Recording...";
-        llmToggleRecording.textContent = "Stop Recording";
-        isLlmRecording = true;
-        llmPauseRecording.disabled = false;
-      } catch (err) {
-        llmStatus.textContent = "Microphone error: " + err.message;
-        console.error("Microphone error:", err);
-      }
-    } else {
-      if (llmMediaRecorder && llmMediaRecorder.state !== 'inactive') {
-        llmMediaRecorder.stop();
-        console.log("LLM recorder stopped");
-      }
+      startLlmRecording();
+    } else if (llmMediaRecorder && llmMediaRecorder.state !== 'inactive') {
+      llmMediaRecorder.stop();
     }
   }
 
+  function startLlmRecording() {
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+      llmMediaRecorder = new MediaRecorder(stream);
+      llmAudioChunks = [];
+      llmMediaRecorder.ondataavailable = e => llmAudioChunks.push(e.data);
+      llmMediaRecorder.onstop = () => handleLlmStop(stream);
+      llmMediaRecorder.start();
+      isLlmRecording = true;
+      llmPauseRecording.disabled = false;
+      llmToggleRecording.textContent = 'Stop Recording';
+      llmStatus.textContent = 'Listening...';
+    }).catch(err => {
+      llmStatus.textContent = 'Microphone error: ' + err.message;
+    });
+  }
+
+  function handleLlmStop(stream) {
+    stream.getTracks().forEach(t => t.stop());
+    isLlmRecording = false;
+    llmPauseRecording.disabled = true;
+    llmToggleRecording.textContent = 'Start Recording';
+    llmStatus.textContent = 'Processing...';
+    const blob = new Blob(llmAudioChunks, { type: 'audio/ogg' });
+    const fd = new FormData();
+    fd.append('file', blob, 'llm_recording.ogg');
+    fetch(`/agent/chat/${sessionId}`, { method: 'POST', body: fd })
+      .then(r => r.json().then(data => ({ ok: r.ok, data })))
+      .then(({ ok, data }) => {
+        console.log('LLM chat response:', data);
+        if (!ok) throw new Error(data.detail || 'Request failed');
+        appendChatMessage('user', data.transcribed_text || '[Unrecognized]');
+        appendChatMessage('agent', data.llm_response || '[No response]');
+        llmAudio.src = data.audio_url;
+        llmAudio.onended = () => {
+          // Auto start next user turn after reply plays
+          if (!isLlmRecording) startLlmRecording();
+        };
+        llmAudio.play().catch(() => (llmStatus.textContent = 'Error playing audio'));
+      })
+      .catch(err => {
+        llmStatus.textContent = 'Error: ' + err.message;
+      });
+  }
+
   function pauseLlmRecording() {
-    if (llmMediaRecorder && llmMediaRecorder.state === 'recording') {
+    if (!llmMediaRecorder) return;
+    if (llmMediaRecorder.state === 'recording') {
       llmMediaRecorder.pause();
-      llmStatus.textContent = "Paused...";
-      llmPauseRecording.textContent = "Resume";
-    } else if (llmMediaRecorder && llmMediaRecorder.state === 'paused') {
+      llmStatus.textContent = 'Paused';
+      llmPauseRecording.textContent = 'Resume';
+    } else if (llmMediaRecorder.state === 'paused') {
       llmMediaRecorder.resume();
-      llmStatus.textContent = "Recording...";
-      llmPauseRecording.textContent = "Pause";
+      llmStatus.textContent = 'Listening...';
+      llmPauseRecording.textContent = 'Pause';
     }
+  }
+
+  function appendChatMessage(role, text) {
+    if (!llmChatMessages) return null;
+    const div = document.createElement('div');
+    div.className = `chat-message ${role}`;
+    const safeText = (text && text.toString().trim()) ? text.toString().trim() : (role === 'user' ? '[Unrecognized]' : '[No response]');
+    div.innerHTML = `<div class="chat-text">${safeText}</div>`;
+    llmChatMessages.appendChild(div);
+    llmChatMessages.scrollTop = llmChatMessages.scrollHeight;
+    return div;
+  }
+
+  function appendSystemMessage(text) {
+    const div = document.createElement('div');
+    div.className = 'chat-message agent';
+    div.style.opacity = '0.7';
+    div.innerHTML = `<div>${text}</div>`;
+    llmChatMessages.appendChild(div);
+  }
+
+  function clearChat() {
+    if (llmChatMessages) llmChatMessages.innerHTML = '';
   }
 
   // Add click events with error handling
@@ -218,15 +244,7 @@ document.addEventListener('DOMContentLoaded', () => {
   } else {
     console.error("Pause Recording button not found!");
   }
-  if (llmToggleRecording) {
-    llmToggleRecording.addEventListener('click', toggleLlmRecording);
-  } else {
-    console.error("LLM Toggle Recording button not found!");
-  }
-  if (llmPauseRecording) {
-    llmPauseRecording.addEventListener('click', pauseLlmRecording);
-    llmPauseRecording.disabled = true;
-  } else {
-    console.error("LLM Pause Recording button not found!");
-  }
+  llmToggleRecording?.addEventListener('click', toggleLlmRecording);
+  llmPauseRecording?.addEventListener('click', pauseLlmRecording);
+  llmPauseRecording && (llmPauseRecording.disabled = true);
 });

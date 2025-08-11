@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <link rel="icon" href="/static/images/favicon.ico" type="image/murf-icon">
-  <link rel="stylesheet" href="/static/css/style.css">
-  <title>Murf AI Voice Agent - Day 9</title>
+  <link rel="stylesheet" id="mainStylesheet" href="/static/css/style.css?v=1">
+  <title>Murf AI Voice Agent - Day 10</title>
   <style>
     .record-icon {
       color: red;
@@ -43,16 +43,12 @@
 
       <div id="llm-bot">
         <h1>LLM Bot</h1>
-        <button id="llmToggleRecording"><span class="record-icon" id="llmRecordDot">●</span> Start Recording</button>
+        <button id="llmToggleRecording"><span class="record-icon" id="llmRecordDot">●</span> Start Speaking</button>
         <button id="llmPauseRecording">Pause</button><br><br>
         <audio id="llmAudio" controls></audio>
         <p id="llmStatus"></p>
-        <div id="llmResults">
-          <strong>Input Text:</strong>
-          <span id="llmTranscribedText"></span>
-          <br>
-          <strong>LLM Response:</strong>
-          <span id="llmResponseText"></span>
+        <div id="llmChat" class="chat-container" style="margin-top:12px;">
+          <div id="llmChatMessages" class="chat-messages"></div>
         </div>
       </div>
     </div>

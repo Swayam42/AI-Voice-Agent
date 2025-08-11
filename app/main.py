@@ -8,7 +8,10 @@ import os
 from dotenv import load_dotenv
 import assemblyai as aai
 import time
+import tempfile
+import shutil
 import google.generativeai as genai
+from typing import List, Dict
 
 # Load environment variables
 load_dotenv()
@@ -163,6 +166,108 @@ def getResponsefromGemini(prompt: str) -> str:
     except Exception as e:
         print(f"Gemini error: {e}")
         return "Sorry, I couldn't process that."
+
+# ---------------- Chat History (In-Memory) ----------------
+# Structure: { session_id: [ {"role": "user"|"assistant", "content": str}, ... ] }
+CHAT_HISTORY: Dict[str, List[Dict[str, str]]] = {}
+
+def build_chat_prompt(history: List[Dict[str, str]]) -> str:
+    """Convert history into a single prompt for Gemini."""
+    lines = ["You are a helpful, concise voice AI. Keep replies brief unless asked to elaborate."]
+    for msg in history[-10:]:  # limit to last 10 messages to control token size
+        role = "User" if msg["role"] == "user" else "Assistant"
+        lines.append(f"{role}: {msg['content']}")
+    lines.append("Assistant:")
+    return "\n".join(lines)
+
+def transcribe_audio_bytes(audio_bytes: bytes, timeout: int = 40) -> str:
+    """Attempt transcription directly; if empty, retry via temp file path."""
+    config = aai.TranscriptionConfig(speech_model=aai.SpeechModel.best)
+    transcriber = aai.Transcriber(config=config)
+    # First attempt: direct
+    try:
+        transcript = transcriber.transcribe(audio_bytes)
+        start_time = time.time()
+        while transcript.status not in [aai.TranscriptStatus.completed, aai.TranscriptStatus.error]:
+            if time.time() - start_time > timeout:
+                raise RuntimeError("Transcription timeout (direct bytes)")
+            transcript = transcriber.get_transcript(transcript.id)
+            time.sleep(1)
+        if transcript.status == aai.TranscriptStatus.completed and transcript.text and transcript.text.strip():
+            return transcript.text.strip()
+    except Exception as e:
+        print(f"Direct transcription attempt failed: {e}")
+
+    # Fallback attempt: write to temp file
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp:
+            tmp.write(audio_bytes)
+            tmp_path = tmp.name
+        transcript = transcriber.transcribe(tmp_path)
+        start_time = time.time()
+        while transcript.status not in [aai.TranscriptStatus.completed, aai.TranscriptStatus.error]:
+            if time.time() - start_time > timeout:
+                raise RuntimeError("Transcription timeout (temp file)")
+            transcript = transcriber.get_transcript(transcript.id)
+            time.sleep(1)
+        if transcript.status == aai.TranscriptStatus.error:
+            raise RuntimeError(transcript.error or "Transcription failed")
+        return (transcript.text or "").strip()
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+@app.post("/agent/chat/{session_id}")
+async def agent_chat(session_id: str, file: UploadFile = File(...)):
+    """Conversational endpoint with chat history.
+    Flow: audio -> STT -> append user msg -> LLM w/ history -> append assistant -> TTS -> return."""
+    try:
+        audio_bytes = await file.read()
+        if not audio_bytes or len(audio_bytes) < 100:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty or too small.")
+
+        # Transcribe (with fallback)
+        user_text = transcribe_audio_bytes(audio_bytes)
+        print(f"Transcribed (user) text: '{user_text}' (len={len(user_text)})")
+        if not user_text:
+            raise HTTPException(status_code=400, detail="Empty transcription")
+
+        # Update history
+        history = CHAT_HISTORY.setdefault(session_id, [])
+        history.append({"role": "user", "content": user_text})
+
+        # Build prompt & LLM response
+        prompt = build_chat_prompt(history)
+        ai_reply = getResponsefromGemini(prompt)
+        history.append({"role": "assistant", "content": ai_reply})
+
+        # TTS via Murf
+        murf_headers = {"api-key": MURF_API_KEY, "Content-Type": "application/json"}
+        murf_payload = {"text": ai_reply, "voiceId": "en-US-ken"}
+        murf_response = requests.post(MURF_API_URL, headers=murf_headers, json=murf_payload)
+        murf_response.raise_for_status()
+        audio_url = murf_response.json().get("audioFile")
+        if not audio_url:
+            raise HTTPException(status_code=500, detail="No audio file returned from Murf")
+
+        return {
+            "audio_url": audio_url,
+            "transcribed_text": user_text,
+            "llm_response": ai_reply,
+            "history": history[-20:],  # recent history
+            "debug": {"transcribed_length": len(user_text)}
+        }
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"agent_chat unexpected error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/llm/query")
 async def llm_query(file: UploadFile = File(...)):
