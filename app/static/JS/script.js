@@ -1,40 +1,136 @@
-// Function to format file size in a human-readable format
-function formatFileSize(bytes) {
-  if (bytes === 0) return '0 Bytes';
-  
-  const k = 1024;
-  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+// Minimal chat-first UI script wiring: sidebar tools, mic toggle, chat bubbles with play button
+document.addEventListener('DOMContentLoaded', () => {
+  // Sidebar controls
+  const sidebar = document.getElementById('sidebar');
+  const sidebarToggle = document.getElementById('sidebarToggle');
+  const sidebarClose = document.getElementById('sidebarClose');
+
+  const openSidebar = () => sidebar?.classList.add('open');
+  const closeSidebar = () => sidebar?.classList.remove('open');
+  sidebarToggle?.addEventListener('click', openSidebar);
+  sidebarClose?.addEventListener('click', closeSidebar);
+
+  // Elements - Tools (TTS & Echo) inside sidebar
+  const ttsText = document.getElementById('ttsText');
+  const ttsSubmit = document.getElementById('ttsSubmit');
+  const ttsStatus = document.getElementById('ttsStatus');
+  const ttsAudio = document.getElementById('ttsAudio');
+  const ttsDownload = document.getElementById('ttsDownload');
+
+  const echoToggle = document.getElementById('echoToggle');
+  const echoStatus = document.getElementById('echoStatus');
+  const echoAudio = document.getElementById('echoAudio');
+  const echoDownload = document.getElementById('echoDownload');
+
+  // Main LLM UI elements
+  const micToggle = document.getElementById('micToggle');
+  const micLabel = document.getElementById('micLabel');
+  const llmStatus = document.getElementById('llmStatus');
+  const chatMessages = document.getElementById('chatMessages');
+  const agentAudio = document.getElementById('agentAudio');
+  // Optional UI sounds (place files in /static/sounds)
+  const uiSoundStart = new Audio('/static/sounds/mic_start.mp3');
+  const uiSoundStop = new Audio('/static/sounds/mic_stop.mp3');
+  const uiSoundMute = new Audio('/static/sounds/mic_mute.mp3');
+
+  // ---- Autoplay Reliability Helpers ----
+  let audioUnlocked = false;
+  let pendingAutoPlayUrl = null;
+
+function unlockAudioIfNeeded() {
+  if (audioUnlocked || !agentAudio) return;
+
+  agentAudio.src = "/static/silence.mp3"; // a 0.1s silent mp3 you place in static
+  agentAudio.play().then(() => {
+    agentAudio.pause();
+    agentAudio.currentTime = 0;
+    audioUnlocked = true;
+    console.log("Audio unlocked");
+    if (pendingAutoPlayUrl) {
+      const u = pendingAutoPlayUrl;
+      pendingAutoPlayUrl = null;
+      playAgentAudio(u, true);
+    }
+  }).catch(err => {
+    console.warn("Unlock attempt failed:", err);
+    // fallback to WebAudio silent oscillator
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (Ctx) {
+        const ctx = new Ctx();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        gain.gain.value = 0;
+        osc.connect(gain).connect(ctx.destination);
+        osc.start();
+        setTimeout(() => {
+          osc.stop();
+          ctx.close();
+          audioUnlocked = true;
+          if (pendingAutoPlayUrl) {
+            const u = pendingAutoPlayUrl;
+            pendingAutoPlayUrl = null;
+            playAgentAudio(u, true);
+          }
+        }, 50);
+      }
+    } catch (_) {
+      audioUnlocked = true;
+    }
+  });
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-  // Elements - TTS section
-  const textInput = document.getElementById('textInput');
-  const submitButton = document.getElementById('submitBtn');
-  const audio = document.getElementById('audio');
-  const status = document.getElementById('status');
 
-  // Echo bot
-  const toggleRecording = document.getElementById('toggleRecording');
-  const pauseRecording = document.getElementById('pauseRecording');
-  const echoAudio = document.getElementById('echoAudio');
-  const echoStatus = document.getElementById('echoStatus');
+  // Auto-play helper for agent audio
+function playAgentAudio(url, force = false) {
+  if (!agentAudio || !url) return;
 
-  // LLM bot
-  const llmToggleRecording = document.getElementById('llmToggleRecording');
-  const llmPauseRecording = document.getElementById('llmPauseRecording');
-  const llmAudio = document.getElementById('llmAudio');
-  const llmStatus = document.getElementById('llmStatus');
-  const llmChatMessages = document.getElementById('llmChatMessages');
+  if (!audioUnlocked && !force) {
+    pendingAutoPlayUrl = url;
+    return;
+  }
 
-  // Session management: ensure session_id is in URL query param
+  try {
+    agentAudio.pause();
+    agentAudio.currentTime = 0;
+  } catch (_) {}
+
+  try {
+    agentAudio.srcObject = null;
+  } catch (_) {}
+
+  const cacheBustUrl = url + (url.includes('?') ? '&' : '?') + 't=' + Date.now();
+  agentAudio.src = cacheBustUrl;
+
+  // Try to play immediately once metadata is loaded
+  agentAudio.onloadeddata = () => {
+    agentAudio.play().catch(err => {
+      console.warn('First play attempt blocked:', err);
+      retryPlay();
+    });
+  };
+
+  // fallback retry logic
+  function retryPlay(attempt = 1) {
+    if (attempt > 3) {
+      pendingAutoPlayUrl = url; // try on next gesture
+      return;
+    }
+    setTimeout(() => {
+      agentAudio.play()
+        .then(() => console.log('Audio playback started (retry)', attempt))
+        .catch(() => retryPlay(attempt + 1));
+    }, 250 * attempt);
+  }
+}
+
+
+  // Session management: ensure session_id in URL
   function ensureSessionId() {
     const url = new URL(window.location.href);
     let sid = url.searchParams.get('session_id');
     if (!sid) {
-      sid = crypto.randomUUID();
+      sid = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now());
       url.searchParams.set('session_id', sid);
       window.history.replaceState({}, '', url.toString());
     }
@@ -43,208 +139,212 @@ document.addEventListener('DOMContentLoaded', () => {
   const sessionId = ensureSessionId();
 
   // Recording state
-  let mediaRecorder; // echo
-  let audioChunks = [];
-  let isRecording = false;
+  let echoRecorder = null;
+  let echoChunks = [];
+  let isEchoRecording = false;
 
-  let llmMediaRecorder; // llm
-  let llmAudioChunks = [];
-  let isLlmRecording = false;
-  // (no hands-free auto loop)
+  let micRecorder = null;
+  let micChunks = [];
+  let isMicRecording = false;
+  let pendingUserBubble = null;
 
-  async function generateAudio() {
-    const text = textInput.value;
+  // Helpers: UI
+  function setMicState(active) {
+    isMicRecording = !!active;
+    if (micToggle) {
+      micToggle.classList.toggle('active', active);
+      micToggle.classList.toggle('idle', !active);
+    }
+    if (micLabel) micLabel.textContent = active ? 'Stop Speaking' : 'Start Speaking';
+    if (llmStatus) llmStatus.textContent = active ? 'Listening…' : '';
+    // Try playing small UI sound cues; ignore failures
+    try {
+      if (active) {
+        // If coming from muted state, prefer start sound
+        uiSoundStart.currentTime = 0; uiSoundStart.play().catch(() => {});
+      } else {
+        uiSoundStop.currentTime = 0; uiSoundStop.play().catch(() => {});
+      }
+    } catch (_) {}
+  }
+
+  function addMsg(role, text, opts = {}) {
+    if (!chatMessages) return null;
+    const row = document.createElement('div');
+    row.className = `msg ${role}`;
+
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.textContent = (text && String(text).trim()) || (role === 'user' ? '[Unrecognized]' : '[No response]');
+    row.appendChild(bubble);
+
+    if (role === 'agent' && opts.audioUrl) {
+      const btn = document.createElement('button');
+      btn.className = 'play-btn';
+      btn.setAttribute('aria-label', 'Play response');
+      btn.innerHTML = `
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M8 5v14l11-7-11-7z" fill="currentColor"/>
+        </svg>`;
+      btn.addEventListener('click', () => {
+        if (!agentAudio) return;
+        if (agentAudio.src !== opts.audioUrl) agentAudio.src = opts.audioUrl;
+        agentAudio.play().catch(() => {});
+      });
+      row.appendChild(btn);
+    }
+
+    chatMessages.appendChild(row);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+    return { row, bubble };
+  }
+
+  // Sidebar: TTS
+  async function handleTtsGenerate() {
+    if (!ttsText || !ttsAudio || !ttsStatus) return;
+    const text = ttsText.value.trim();
     if (!text) {
-      status.textContent = "Please enter text!";
+      ttsStatus.textContent = 'Enter text';
       return;
     }
-    status.textContent = "Generating audio...";
-    audio.src = "";
+    ttsStatus.textContent = 'Generating audio…';
+    ttsAudio.removeAttribute('src');
     try {
-      const response = await fetch('/generate_audio', {
+      const res = await fetch('/generate_audio', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, voiceId: "en-US-charles", style: "Conversational" })
+        body: JSON.stringify({ text, voiceId: 'en-US-charles', style: 'Conversational' })
       });
-      const data = await response.json();
-      if (response.ok) {
-        audio.src = data.audio_url;
-        status.textContent = "Audio ready!";
-        audio.play().catch(() => status.textContent = "Error playing audio");
-      } else {
-        status.textContent = "Error: " + (data.detail || response.statusText);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || res.statusText);
+      ttsAudio.src = data.audio_url;
+      ttsStatus.textContent = 'Audio ready';
+      if (ttsDownload) {
+        ttsDownload.href = data.audio_url;
+        ttsDownload.style.display = 'inline-block';
+        const fname = 'tts_audio_' + Date.now() + '.mp3';
+        ttsDownload.setAttribute('download', fname);
       }
-    } catch (error) {
-      status.textContent = "Error: " + error.message;
-      console.error("Fetch error:", error);
+      ttsAudio.play().catch(() => {});
+    } catch (e) {
+      ttsStatus.textContent = 'Error: ' + e.message;
     }
   }
 
-  function toggleEchoRecording() {
-    if (!isRecording) {
-      navigator.mediaDevices.getUserMedia({ audio: true })
-        .then(stream => {
-          mediaRecorder = new MediaRecorder(stream);
-          audioChunks = [];
-          mediaRecorder.ondataavailable = event => audioChunks.push(event.data);
-          mediaRecorder.onstop = async () => {
-            const audioBlob = new Blob(audioChunks, { type: 'audio/ogg; codecs=opus' });
-            echoStatus.textContent = "Generating Murf audio...";
-            stream.getTracks().forEach(track => track.stop());
-            toggleRecording.textContent = "Start Recording";
-            isRecording = false;
-            pauseRecording.disabled = true;
-
-            const formData = new FormData();
-            formData.append('file', audioBlob, 'echo_recording.ogg');
-            try {
-              const response = await fetch('/tts/echo', { method: 'POST', body: formData });
-              const result = await response.json();
-              if (response.ok) {
-                echoAudio.src = result.audio_url;
-                echoStatus.innerHTML = `Murf audio ready!<br><b>Transcription:</b> ${result.transcription || 'N/A'}`;
-                echoAudio.play().catch(() => echoStatus.textContent = "Error playing audio");
-              } else {
-                echoStatus.textContent = "Error: " + (result.detail || response.statusText);
-              }
-            } catch (error) {
-              echoStatus.textContent = "Error: " + error.message;
-              console.error("Fetch error:", error);
-            }
-          };
-          mediaRecorder.start();
-          echoStatus.textContent = "Recording...";
-          toggleRecording.textContent = "Stop Recording";
-          isRecording = true;
-          pauseRecording.disabled = false;
-        })
-        .catch(err => {
-          echoStatus.textContent = "Microphone error: " + err.message;
-          console.error("Microphone error:", err);
-        });
-    } else {
-      mediaRecorder.stop();
+  // Sidebar: Echo
+  function toggleEcho() {
+    if (isEchoRecording) {
+      echoRecorder && echoRecorder.state !== 'inactive' && echoRecorder.stop();
+      return;
     }
-  }
-
-  function pauseEchoRecording() {
-    if (mediaRecorder && mediaRecorder.state === 'recording') {
-      mediaRecorder.pause();
-      echoStatus.textContent = "Paused...";
-      pauseRecording.textContent = "Resume";
-    } else if (mediaRecorder && mediaRecorder.state === 'paused') {
-      mediaRecorder.resume();
-      echoStatus.textContent = "Recording...";
-      pauseRecording.textContent = "Pause";
-    }
-  }
-
-  function toggleLlmRecording() {
-    if (!isLlmRecording) {
-      startLlmRecording();
-    } else if (llmMediaRecorder && llmMediaRecorder.state !== 'inactive') {
-      llmMediaRecorder.stop();
-    }
-  }
-
-  function startLlmRecording() {
     navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
-      llmMediaRecorder = new MediaRecorder(stream);
-      llmAudioChunks = [];
-      llmMediaRecorder.ondataavailable = e => llmAudioChunks.push(e.data);
-      llmMediaRecorder.onstop = () => handleLlmStop(stream);
-      llmMediaRecorder.start();
-      isLlmRecording = true;
-      llmPauseRecording.disabled = false;
-      llmToggleRecording.textContent = 'Stop Recording';
-      llmStatus.textContent = 'Listening...';
+      echoChunks = [];
+      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/ogg;codecs=opus';
+      echoRecorder = new MediaRecorder(stream, { mimeType: mime });
+      echoRecorder.ondataavailable = e => e.data && echoChunks.push(e.data);
+      echoRecorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        isEchoRecording = false;
+        if (echoToggle) echoToggle.textContent = 'Start Recording';
+        if (echoStatus) echoStatus.textContent = 'Generating audio…';
+
+        const blob = new Blob(echoChunks, { type: mime });
+        const fd = new FormData();
+        fd.append('file', blob, mime.includes('webm') ? 'echo.webm' : 'echo.ogg');
+        try {
+          const res = await fetch('/tts/echo', { method: 'POST', body: fd });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || res.statusText);
+          if (echoAudio) echoAudio.src = data.audio_url;
+          if (echoStatus) echoStatus.textContent = 'Murf audio ready';
+          if (echoDownload) {
+            echoDownload.href = data.audio_url;
+            echoDownload.style.display = 'inline-block';
+            echoDownload.setAttribute('download', 'echo_audio_' + Date.now() + '.mp3');
+          }
+          echoAudio?.play().catch(() => {});
+        } catch (e) {
+          if (echoStatus) echoStatus.textContent = 'Error: ' + e.message;
+        }
+      };
+      echoRecorder.start();
+      isEchoRecording = true;
+      if (echoToggle) echoToggle.textContent = 'Stop Recording';
+      if (echoStatus) echoStatus.textContent = 'Recording…';
     }).catch(err => {
-      llmStatus.textContent = 'Microphone error: ' + err.message;
+      if (echoStatus) echoStatus.textContent = 'Microphone error: ' + err.message;
     });
   }
 
-  function handleLlmStop(stream) {
+  // LLM: Mic toggle and chat flow
+  function toggleMic() {
+  // Unlock audio on first user gesture
+  unlockAudioIfNeeded();
+
+  if (isMicRecording) {
+    micRecorder && micRecorder.state !== 'inactive' && micRecorder.stop();
+    return;
+  }
+
+  navigator.mediaDevices.getUserMedia({ audio: true })
+    .then(stream => {
+      micChunks = [];
+      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') 
+        ? 'audio/webm;codecs=opus' 
+        : 'audio/ogg;codecs=opus';
+      micRecorder = new MediaRecorder(stream, { mimeType: mime });
+      micRecorder.ondataavailable = e => e.data && micChunks.push(e.data);
+      micRecorder.onstop = () => handleMicStop(stream, mime);
+      micRecorder.start();
+      setMicState(true);
+      const pending = addMsg('user', '…');
+      pendingUserBubble = pending?.bubble || null;
+    })
+    .catch(err => {
+      if (llmStatus) llmStatus.textContent = 'Microphone error: ' + err.message;
+    });
+}
+
+
+  function handleMicStop(stream, mime) {
     stream.getTracks().forEach(t => t.stop());
-    isLlmRecording = false;
-    llmPauseRecording.disabled = true;
-    llmToggleRecording.textContent = 'Start Recording';
-    llmStatus.textContent = 'Processing...';
-    const blob = new Blob(llmAudioChunks, { type: 'audio/ogg' });
+    setMicState(false);
+    if (llmStatus) llmStatus.textContent = 'Processing…';
+
+    const blob = new Blob(micChunks, { type: mime });
     const fd = new FormData();
-    fd.append('file', blob, 'llm_recording.ogg');
+    fd.append('file', blob, mime.includes('webm') ? 'input.webm' : 'input.ogg');
+
     fetch(`/agent/chat/${sessionId}`, { method: 'POST', body: fd })
       .then(r => r.json().then(data => ({ ok: r.ok, data })))
       .then(({ ok, data }) => {
-        console.log('LLM chat response:', data);
         if (!ok) throw new Error(data.detail || 'Request failed');
-        appendChatMessage('user', data.transcribed_text || '[Unrecognized]');
-        appendChatMessage('agent', data.llm_response || '[No response]');
-        llmAudio.src = data.audio_url;
-        llmAudio.onended = () => {
-          // Auto start next user turn after reply plays
-          if (!isLlmRecording) startLlmRecording();
-        };
-        llmAudio.play().catch(() => (llmStatus.textContent = 'Error playing audio'));
+
+        // Replace pending user bubble with actual transcript
+        if (pendingUserBubble) {
+          pendingUserBubble.textContent = (data.transcribed_text && String(data.transcribed_text).trim()) || '[Unrecognized]';
+          pendingUserBubble = null;
+        } else {
+          addMsg('user', data.transcribed_text || '[Unrecognized]');
+        }
+
+        // Agent message with play button
+  addMsg('agent', data.llm_response || '[No response]', { audioUrl: data.audio_url });
+  playAgentAudio(data.audio_url);
+
+        if (llmStatus) llmStatus.textContent = '';
       })
       .catch(err => {
-        llmStatus.textContent = 'Error: ' + err.message;
+        if (pendingUserBubble) {
+          pendingUserBubble.textContent = '[Unrecognized]';
+          pendingUserBubble = null;
+        }
+        if (llmStatus) llmStatus.textContent = 'Error: ' + err.message;
       });
   }
 
-  function pauseLlmRecording() {
-    if (!llmMediaRecorder) return;
-    if (llmMediaRecorder.state === 'recording') {
-      llmMediaRecorder.pause();
-      llmStatus.textContent = 'Paused';
-      llmPauseRecording.textContent = 'Resume';
-    } else if (llmMediaRecorder.state === 'paused') {
-      llmMediaRecorder.resume();
-      llmStatus.textContent = 'Listening...';
-      llmPauseRecording.textContent = 'Pause';
-    }
-  }
-
-  function appendChatMessage(role, text) {
-    if (!llmChatMessages) return null;
-    const div = document.createElement('div');
-    div.className = `chat-message ${role}`;
-    const safeText = (text && text.toString().trim()) ? text.toString().trim() : (role === 'user' ? '[Unrecognized]' : '[No response]');
-    div.innerHTML = `<div class="chat-text">${safeText}</div>`;
-    llmChatMessages.appendChild(div);
-    llmChatMessages.scrollTop = llmChatMessages.scrollHeight;
-    return div;
-  }
-
-  function appendSystemMessage(text) {
-    const div = document.createElement('div');
-    div.className = 'chat-message agent';
-    div.style.opacity = '0.7';
-    div.innerHTML = `<div>${text}</div>`;
-    llmChatMessages.appendChild(div);
-  }
-
-  function clearChat() {
-    if (llmChatMessages) llmChatMessages.innerHTML = '';
-  }
-
-  // Add click events with error handling
-  if (submitButton) {
-    submitButton.addEventListener('click', generateAudio);
-  } else {
-    console.error("Submit button not found!");
-  }
-  if (toggleRecording) {
-    toggleRecording.addEventListener('click', toggleEchoRecording);
-  } else {
-    console.error("Toggle Recording button not found!");
-  }
-  if (pauseRecording) {
-    pauseRecording.addEventListener('click', pauseEchoRecording);
-    pauseRecording.disabled = true;
-  } else {
-    console.error("Pause Recording button not found!");
-  }
-  llmToggleRecording?.addEventListener('click', toggleLlmRecording);
-  llmPauseRecording?.addEventListener('click', pauseLlmRecording);
-  llmPauseRecording && (llmPauseRecording.disabled = true);
+  // Wire up events
+  ttsSubmit?.addEventListener('click', handleTtsGenerate);
+  echoToggle?.addEventListener('click', toggleEcho);
+  micToggle?.addEventListener('click', toggleMic);
 });

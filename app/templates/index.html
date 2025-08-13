@@ -1,59 +1,72 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <link rel="icon" href="/static/images/favicon.ico" type="image/murf-icon">
-  <link rel="stylesheet" id="mainStylesheet" href="/static/css/style.css?v=1">
-  <title>Murf AI Voice Agent - Day 11</title>
-  <style>
-    .record-icon {
-      color: red;
-      font-size: 1.5em;
-      vertical-align: middle;
-      margin-right: 5px;
-      transition: opacity 0.3s;
-    }
-    .blinking {
-      animation: blink 1s steps(2, start) infinite;
-    }
-    @keyframes blink {
-      to { opacity: 0; }
-    }
-  </style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="/static/images/favicon.ico" type="image/x-icon" />
+  <link rel="stylesheet" href="/static/css/style.css?v=2" />
+  <title>Day 12-Voice Agent</title>
 </head>
 <body>
-  <div class="container">
-    <h1>Playing back TTS Audio</h1>
-
-    <input type="text" id="textInput" placeholder="Type something...">
-    <button id="submitBtn">Submit</button>
-
-    <div id="audioPlayer">
-      <p>Audio:</p>
-      <audio id="audio" controls></audio>
-      <p id="status"></p>
-
-      <div id="echo-bot">
-        <h1>Echo Bot</h1>
-        <button id="toggleRecording"><span class="record-icon" id="recordDot">●</span> Start Recording</button>
-        <button id="pauseRecording">Pause</button><br><br>
-        <audio id="echoAudio" controls></audio>
-        <p id="echoStatus"></p>
-      </div>
-
-      <div id="llm-bot">
-        <h1>LLM Bot</h1>
-        <button id="llmToggleRecording"><span class="record-icon" id="llmRecordDot">●</span> Start Speaking</button>
-        <button id="llmPauseRecording">Pause</button><br><br>
-        <audio id="llmAudio" controls></audio>
-        <p id="llmStatus"></p>
-        <div id="llmChat" class="chat-container" style="margin-top:12px;">
-          <div id="llmChatMessages" class="chat-messages"></div>
-        </div>
-      </div>
+  <!-- Left toggleable tools sidebar (hidden by default) -->
+  <aside id="sidebar" class="sidebar" aria-hidden="true">
+    <div class="sidebar-header">
+      <div class="sidebar-title">Tools</div>
+      <button id="sidebarClose" class="icon-btn" aria-label="Close tools">&times;</button>
     </div>
-  </div>
+    <div class="sidebar-content">
+      <section class="tool-section">
+        <h3 class="tool-title">Text to Speech</h3>
+        <input id="ttsText" type="text" placeholder="Type text..." /> <br> <br>
+        <button id="ttsSubmit" class="btn small">Generate</button>
+        <small id="ttsStatus" class="status"></small>
+        <audio id="ttsAudio" controls class="tool-audio"></audio>
+        <a id="ttsDownload" class="download" href="#" download style="display:none;">Download audio</a>
+      </section>
 
-  <script src="/static/JS/script.js"></script>
+      <section class="tool-section">
+        <h3 class="tool-title">Echo Bot</h3>
+        <button id="echoToggle" class="btn small">Start Recording</button>
+        <small id="echoStatus" class="status"></small>
+        <audio id="echoAudio" controls class="tool-audio"></audio>
+        <a id="echoDownload" class="download" href="#" download style="display:none;">Download audio</a>
+      </section>
+    </div>
+  </aside>
+
+  <!-- Top bar with hamburger and bot name -->
+  <header class="topbar">
+    <button id="sidebarToggle" class="icon-btn" aria-label="Open tools" title="Tools">
+      <!-- Hamburger icon -->
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+      </svg>
+    </button>
+    <h1 class="brand" id="botName">LLM Bot</h1>
+    <div class="topbar-spacer"></div>
+  </header>
+
+  <!-- Main content -->
+  <main id="content" class="content">
+    <section class="controls">
+      <button id="micToggle" class="mic idle" aria-pressed="false">
+        <svg class="mic-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3Z" fill="currentColor"/>
+          <path d="M5 11a7 7 0 0 0 14 0" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <path d="M12 18v3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        <span id="micLabel">Start Speaking</span>
+      </button>
+      <small id="llmStatus" class="status"></small>
+    </section>
+
+    <section id="chat" class="chat">
+      <div id="chatMessages" class="messages"></div>
+    </section>
+
+    <audio id="agentAudio" preload="auto" hidden></audio>
+  </main>
+
+  <script src="/static/JS/script.js?v=2"></script>
 </body>
 </html>
