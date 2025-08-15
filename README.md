@@ -45,25 +45,30 @@ User Voice → FastAPI → AssemblyAI → Gemini → Murf → Browser Playback
 
 ```
 app/
-├── main.py                        # FastAPI application (STT + LLM + TTS endpoints)
+├── main.py                # FastAPI entrypoint (routes import service layer)
+├── services/              # Separated domain/service logic
+│   ├── stt_service.py     # AssemblyAI transcription helpers
+│   ├── tts_service.py     # Murf.ai TTS client wrapper
+│   └── llm_service.py     # Gemini client + prompt builder
+├── schemas/               # Pydantic request/response models
+│   └── tts.py             # TextToSpeechRequest, ChatResponse, etc.
 ├── templates/
-│   └── index.html                 # Single-page UI (chat + tools sidebar)
+│   └── index.html         # UI shell (chat + sidebar tools)
 ├── static/
-│   ├── css/
-│   │   └── style.css              # Styles (chat layout, sidebar, theming)
-│   ├── JS/
-│   │   └── script.js              # Frontend: media recording, chat flow, sidebar tools
-│   ├── images/
-│   │   ├── logo.png               # Branding
-│   │   ├── ui-screenshot.png      
-│   │   └── demo.gif               
-│   └── sounds/                    # UI sound effects
+│   ├── css/style.css      # Styles (layout + responsive + theme)
+│   ├── JS/script.js       # Frontend logic (record, upload, autoplay)
+│   ├── images/            # Logo, screenshot, demo GIF
+│   │   ├── logo.png
+│   │   ├── ui-screenshot.png
+│   │   └── demo.gif
+│   └── sounds/            # Mic UI feedback
 │       ├── mic_start.mp3
-│       ├── mic_stop.mp3
-requirements.txt                   # Python dependencies
-.env                               # API keys (NOT committed)
-.gitignore                         # Ignore venv, .env, pyc, cache, etc.
-README.md                          # Documentation (this file)
+│       └── mic_stop.mp3
+├── uploads/               # (Optional) temp upload storage placeholder
+requirements.txt           # Dependencies
+.env                       # Secret API keys (NOT committed)
+.gitignore                 # Ignore rules
+README.md                  # This file
 ```
 
 ## 🔑 Environment Variables (.env)
@@ -79,7 +84,7 @@ MURF_API_KEY=your_murf_key
 ## 🚀 Quick Start
 
 ```bash
-# 1. (Optional) Create & activate a virtual environment
+# 1. Create & activate a virtual environment
 python -m venv .venv
 .venv\Scripts\activate  # Windows
 
@@ -88,11 +93,14 @@ pip install -r requirements.txt
 
 # 3. Add your .env file (see above)
 
-# 4. Run the server
-python -m uvicorn app.main:app --reload
+# 4. Run the server (simple dev mode)
+cd app && python main.py
 
 # 5. Open in browser
 http://127.0.0.1:8000/
+
+# (Alt) Use uvicorn directly for auto-reload (optional)
+# uvicorn app.main:app --reload
 ```
 
 ## 📡 Key Endpoints
@@ -106,23 +114,24 @@ http://127.0.0.1:8000/
 
 ## 🧪 Tech Highlights
 
-- FastAPI async backend
-- AssemblyAI streaming-style polling to completion
-- Google Gemini (gemini-1.5-flash) for fast reasoning
-- Murf AI for natural speech synthesis
-- MediaRecorder + fetch multipart for audio upload
-- Lightweight DOM manipulation (no React/Vue)
+- FastAPI backend with service + schema layering (clean separation)
+- AssemblyAI transcription (resilient + fallback path)
+- Google Gemini (gemini-1.5-flash) via reusable client & retry logic
+- Murf AI TTS wrapped in a lightweight client (consistent error handling)
+- MediaRecorder + multipart upload for low-latency voice capture
+- Autoplay + replay logic with audio unlock and retry
+- Structured Pydantic responses for clearer API contracts
 
 ## 🔄 Session Handling
 
 Browser session id is appended to the URL (query param). History is stored in an in‑memory dict (`CHAT_HISTORY`) — suitable for prototyping; swap with Redis or DB for production scaling.
 
-
 ## 🛡️ Notes / Limits
 
 - Not production-hardened (no auth, rate limiting, or persistence yet)
 - API keys must remain secret (.env not committed)
-- In-memory history resets on server restart
+- In-memory history resets on server restart (swap with Redis/DB later)
+- Gemini key must be loaded before first request (lazy reconfigure added)
 
 ## 🤝 Contributing
 

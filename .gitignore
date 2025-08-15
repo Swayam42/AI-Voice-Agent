@@ -1,9 +1,17 @@
-*
+# Python
 __pycache__/
-.env
-*.pyc
+*.py[cod]
 *.pyo
 *.pyd
-*.db
+*.so
+
+# Envs
+.env
 venv/
 .env/
+
+# Bytecode / cache
+*.log
+
+# Project artifacts
+uploads/
