@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, File, UploadFile, Request
+from fastapi import FastAPI, HTTPException, File, UploadFile, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -7,6 +7,7 @@ import logging
 from dotenv import load_dotenv
 import assemblyai as aai
 import requests
+import json
 
 load_dotenv()
 
@@ -47,6 +48,33 @@ app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__
 templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
 
 CHAT_HISTORY: dict[str, list] = {}
+
+active_connections: set[WebSocket] = set()
+
+@app.websocket("/ws")
+async def websocket_echo(ws: WebSocket):
+    await ws.accept()
+    active_connections.add(ws)
+    try:
+        await ws.send_json({
+            "type": "welcome",
+            "message": "WebSocket connected",
+            "active": len(active_connections)
+        })
+        while True:
+            text = await ws.receive_text()   
+            await ws.send_json({                  
+                "type": "echo",
+                "you_sent": text,
+                "length": len(text)
+            })
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.error("WebSocket error: %s", e)
+    finally:
+        active_connections.discard(ws)
+        logger.info("WebSocket closed (active=%d)", len(active_connections))
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
