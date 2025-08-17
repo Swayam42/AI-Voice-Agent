@@ -8,6 +8,8 @@ from dotenv import load_dotenv
 import assemblyai as aai
 import requests
 import json
+from datetime import datetime
+from pathlib import Path
 
 load_dotenv()
 
@@ -52,29 +54,86 @@ CHAT_HISTORY: dict[str, list] = {}
 active_connections: set[WebSocket] = set()
 
 @app.websocket("/ws")
-async def websocket_echo(ws: WebSocket):
+async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     active_connections.add(ws)
+    logger.info("Client connected (active=%d)", len(active_connections))
+
+    # Save to uploads folder with timestamp
+    uploads_dir = os.path.join(os.path.dirname(__file__), "uploads")
+    os.makedirs(uploads_dir, exist_ok=True)
+    file_path = os.path.join(uploads_dir, f"recorded_audio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.webm")
+
     try:
-        await ws.send_json({
-            "type": "welcome",
-            "message": "WebSocket connected",
-            "active": len(active_connections)
-        })
-        while True:
-            text = await ws.receive_text()   
-            await ws.send_json({                  
-                "type": "echo",
-                "you_sent": text,
-                "length": len(text)
-            })
+        with open(file_path, "ab") as f:
+            while True:
+                data = await ws.receive_bytes()
+                f.write(data)
+                logger.info("Received %d bytes, saved to %s", len(data), file_path)
     except WebSocketDisconnect:
-        pass
+        logger.info("WebSocket disconnected, file saved at %s", file_path)
     except Exception as e:
         logger.error("WebSocket error: %s", e)
     finally:
         active_connections.discard(ws)
         logger.info("WebSocket closed (active=%d)", len(active_connections))
+
+@app.websocket("/ws/stream-audio")
+async def stream_audio(ws: WebSocket):
+    """Receive binary audio chunks (e.g., MediaRecorder blobs) and save to uploads.
+    Client may optionally send a text frame 'END' to finalize early; otherwise file closes on disconnect.
+    Sends JSON events: ready, progress, done, error.
+    """
+    await ws.accept()
+    uploads_dir = Path(__file__).parent / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"stream_{datetime.utcnow().strftime('%Y%m%d_%H%M%S_%f')}.webm"
+    file_path = uploads_dir / filename
+    total = 0
+    # Create file immediately
+    f = open(file_path, 'wb')
+    logger.info("[stream] started -> %s", file_path)
+    await ws.send_json({"type": "ready", "file": filename})
+    try:
+        while True:
+            msg = await ws.receive()
+            mtype = msg.get('type')
+            if mtype == 'websocket.disconnect':
+                logger.info("[stream] disconnect")
+                break
+            if 'bytes' in msg and msg['bytes']:
+                chunk = msg['bytes']
+                f.write(chunk)
+                f.flush()
+                total += len(chunk)
+                if total % 120000 < len(chunk):  # ~every 120KB
+                    try:
+                        await ws.send_json({"type": "progress", "bytes": total})
+                    except Exception:
+                        pass
+            elif 'text' in msg and msg['text'] is not None:
+                text = msg['text'].strip()
+                if text.upper() == 'END':
+                    await ws.send_json({"type": "info", "message": "Stream ended"})
+                    break
+                else:
+                    await ws.send_json({"type": "ack", "message": f"ignored: {text[:20]}"})
+            else:
+                await ws.send_json({"type": "warn", "message": f"unhandled frame keys {list(msg.keys())}"})
+        await ws.send_json({"type": "done", "file": filename, "bytes": total})
+        logger.info("[stream] done %s bytes=%d", filename, total)
+    except Exception as e:
+        logger.error("[stream] error: %s", e)
+        try:
+            await ws.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
+    finally:
+        try: f.close()
+        except Exception: pass
+        try: await ws.close()
+        except Exception: pass
+        logger.info("[stream] closed %s bytes=%d", filename, total)
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):

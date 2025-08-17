@@ -33,52 +33,29 @@ document.addEventListener('DOMContentLoaded', () => {
   const uiSoundStop = new Audio('/static/sounds/mic_stop.mp3');
   const uiSoundMute = new Audio('/static/sounds/mic_mute.mp3');
 
-  // ---- Autoplay Reliability Helpers ----
+  // ---- Autoplay Reliability Helpers (no external silence file needed) ----
   let audioUnlocked = false;
   let pendingAutoPlayUrl = null;
-
-function unlockAudioIfNeeded() {
-  if (audioUnlocked || !agentAudio) return;
-
-  agentAudio.src = "/static/silence.mp3"; // a 0.1s silent mp3 you place in static
-  agentAudio.play().then(() => {
-    agentAudio.pause();
-    agentAudio.currentTime = 0;
-    audioUnlocked = true;
-    console.log("Audio unlocked");
-    if (pendingAutoPlayUrl) {
-      const u = pendingAutoPlayUrl;
-      pendingAutoPlayUrl = null;
-      playAgentAudio(u, true);
-    }
-  }).catch(err => {
-    console.warn("Unlock attempt failed:", err);
-    // fallback to WebAudio silent oscillator
+  function unlockAudioIfNeeded() {
+    if (audioUnlocked) return;
     try {
       const Ctx = window.AudioContext || window.webkitAudioContext;
       if (Ctx) {
         const ctx = new Ctx();
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        gain.gain.value = 0;
-        osc.connect(gain).connect(ctx.destination);
-        osc.start();
-        setTimeout(() => {
-          osc.stop();
-          ctx.close();
-          audioUnlocked = true;
-          if (pendingAutoPlayUrl) {
-            const u = pendingAutoPlayUrl;
-            pendingAutoPlayUrl = null;
-            playAgentAudio(u, true);
-          }
-        }, 50);
+        const buffer = ctx.createBuffer(1, 1, 22050); // 1 sample silent buffer
+        const src = ctx.createBufferSource();
+        src.buffer = buffer;
+        src.connect(ctx.destination);
+        src.start();
+        setTimeout(() => { try { src.stop(); ctx.close(); } catch(_){} }, 25);
+        audioUnlocked = true;
+        if (pendingAutoPlayUrl) { const u = pendingAutoPlayUrl; pendingAutoPlayUrl = null; playAgentAudio(u, true); }
+        return;
       }
-    } catch (_) {
-      audioUnlocked = true;
-    }
-  });
-}
+    } catch(e) { console.warn('Audio unlock fallback', e); }
+    audioUnlocked = true;
+    if (pendingAutoPlayUrl) { const u = pendingAutoPlayUrl; pendingAutoPlayUrl = null; playAgentAudio(u, true); }
+  }
 
 
   // Auto-play helper for agent audio
@@ -347,4 +324,75 @@ function playAgentAudio(url, force = false) {
   ttsSubmit?.addEventListener('click', handleTtsGenerate);
   echoToggle?.addEventListener('click', toggleEcho);
   micToggle?.addEventListener('click', toggleMic);
+
+  // ================= Day 16: Non-destructive Streaming Add-On =================
+  const streamBtn = document.getElementById('startAndstopBtn'); // Optional separate streaming control
+  const streamLog = document.getElementById('chat-log') || chatMessages; // Reuse chat if no dedicated log
+  let streamWS = null;
+  let streamRecorder = null;
+  let streamMedia = null;
+  let streamActive = false;
+
+  function logStream(msg, cls='stream') {
+    if (!streamLog) { console.log('[stream]', msg); return; }
+    const div = document.createElement('div');
+    div.className = `msg ${cls}`;
+    div.textContent = `[stream] ${msg}`;
+    streamLog.appendChild(div);
+    streamLog.scrollTop = streamLog.scrollHeight;
+  }
+
+  function wsProto() { return location.protocol === 'https:' ? 'wss' : 'ws'; }
+
+  async function startStreaming() {
+    if (streamActive) return;
+    try {
+      streamWS = new WebSocket(`${wsProto()}://${location.host}/ws/stream-audio`);
+      streamWS.onopen = () => logStream('WebSocket connected','status');
+      streamWS.onclose = () => logStream('WebSocket closed','status');
+      streamWS.onerror = e => logStream('WebSocket error','error');
+      streamWS.onmessage = e => {
+        try {
+          const d = JSON.parse(e.data);
+          if (d.type === 'ready') logStream('File: '+d.file,'status');
+          else if (d.type === 'progress') logStream('Progress '+d.bytes+' bytes','progress');
+            else if (d.type === 'done') logStream('Saved '+d.file+' ('+d.bytes+' bytes)','success');
+            else if (d.type === 'error') logStream('Error: '+d.message,'error');
+            else logStream((d.type||'msg')+': '+e.data,'meta');
+        } catch { logStream(e.data,'meta'); }
+      };
+
+      streamMedia = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : '';
+      streamRecorder = new MediaRecorder(streamMedia, mime? { mimeType: mime }: undefined);
+      streamRecorder.ondataavailable = ev => {
+        if (ev.data && ev.data.size > 0 && streamWS?.readyState === WebSocket.OPEN) streamWS.send(ev.data);
+      };
+      streamRecorder.onstop = () => {
+        try { streamWS?.readyState === WebSocket.OPEN && streamWS.send('END'); } catch {}
+        try { streamWS?.close(); } catch {}
+      };
+      streamRecorder.start(500);
+      streamActive = true;
+      if (streamBtn) { streamBtn.textContent = 'Stop Streaming'; streamBtn.classList.add('recording'); }
+      logStream('Streaming started…','status');
+    } catch (err) {
+      logStream('Start error: '+err.message,'error');
+      try { streamMedia?.getTracks().forEach(t=>t.stop()); } catch {}
+    }
+  }
+
+  function stopStreaming() {
+    if (!streamActive) return;
+    try { streamRecorder && streamRecorder.state !== 'inactive' && streamRecorder.stop(); } catch {}
+    try { streamMedia?.getTracks().forEach(t=>t.stop()); } catch {}
+    streamActive = false;
+    if (streamBtn) { streamBtn.textContent = 'Start Streaming'; streamBtn.classList.remove('recording'); }
+    logStream('Streaming stopped','status');
+  }
+
+  streamBtn?.addEventListener('click', e => { e.preventDefault(); streamActive ? stopStreaming() : startStreaming(); });
+  // Expose helpers for console debugging
+  window.__streaming = { startStreaming, stopStreaming };
+  // ========================================================================
 });
