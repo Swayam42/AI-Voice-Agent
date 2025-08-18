@@ -253,71 +253,58 @@ function playAgentAudio(url, force = false) {
     });
   }
 
-  // LLM: Mic toggle and chat flow
-  function toggleMic() {
-  // Unlock audio on first user gesture
-  unlockAudioIfNeeded();
+  // Minimal WebSocket streaming toggle (replaces prior LLM chat flow)
+  let streamWS = null;
+  let streamMedia = null;
+  let streamRecorder = null;
+  let streaming = false;
 
-  if (isMicRecording) {
-    micRecorder && micRecorder.state !== 'inactive' && micRecorder.stop();
-    return;
-  }
+  async function toggleMic() {
+    unlockAudioIfNeeded();
+    if (streaming) {
+      try { streamRecorder && streamRecorder.state === 'recording' && streamRecorder.stop(); } catch(_){}
+      try { streamMedia && streamMedia.getTracks().forEach(t=>t.stop()); } catch(_){}
+      try { streamWS && streamWS.readyState === WebSocket.OPEN && streamWS.close(); } catch(_){}
+      streaming = false;
+      setMicState(false);
+      if (llmStatus) llmStatus.textContent = '';
+      console.log('[stream] stopped');
+      return;
+    }
+    try {
+      streamWS = new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/ws');
+      streamWS.binaryType = 'arraybuffer';
+      streamWS.onopen = () => console.log('[stream] ws open');
+      streamWS.onclose = () => console.log('[stream] ws close');
+      streamWS.onerror = e => console.error('[stream] ws error', e);
 
-  navigator.mediaDevices.getUserMedia({ audio: true })
-    .then(stream => {
-      micChunks = [];
-      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') 
-        ? 'audio/webm;codecs=opus' 
-        : 'audio/ogg;codecs=opus';
-      micRecorder = new MediaRecorder(stream, { mimeType: mime });
-      micRecorder.ondataavailable = e => e.data && micChunks.push(e.data);
-      micRecorder.onstop = () => handleMicStop(stream, mime);
-      micRecorder.start();
+      streamMedia = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+      streamRecorder = new MediaRecorder(streamMedia, { mimeType: mime });
+      let chunkCount = 0;
+      streamRecorder.ondataavailable = e => {
+        if (e.data && e.data.size > 0 && streamWS?.readyState === WebSocket.OPEN) {
+          e.data.arrayBuffer().then(buf => {
+            streamWS.send(buf);
+            chunkCount++;
+            if (chunkCount <= 5 || chunkCount % 10 === 0) console.log('[stream] sent chunk', chunkCount, 'size', buf.byteLength);
+          });
+        }
+      };
+      streamRecorder.onstop = () => console.log('[stream] recorder stopped');
+      streamRecorder.start(500); // every 500ms
+      // Force early first chunk in case of short press
+      setTimeout(()=>{ try { streamRecorder && streamRecorder.state==='recording' && streamRecorder.requestData(); } catch(_){} }, 300);
+      streaming = true;
       setMicState(true);
-      const pending = addMsg('user', '…');
-      pendingUserBubble = pending?.bubble || null;
-    })
-    .catch(err => {
-      if (llmStatus) llmStatus.textContent = 'Microphone error: ' + err.message;
-    });
-}
-
-
-  function handleMicStop(stream, mime) {
-    stream.getTracks().forEach(t => t.stop());
-    setMicState(false);
-    if (llmStatus) llmStatus.textContent = 'Processing…';
-
-    const blob = new Blob(micChunks, { type: mime });
-    const fd = new FormData();
-    fd.append('file', blob, mime.includes('webm') ? 'input.webm' : 'input.ogg');
-
-    fetch(`/agent/chat/${sessionId}`, { method: 'POST', body: fd })
-      .then(r => r.json().then(data => ({ ok: r.ok, data })))
-      .then(({ ok, data }) => {
-        if (!ok) throw new Error(data.detail || 'Request failed');
-
-        // Replace pending user bubble with actual transcript
-        if (pendingUserBubble) {
-          pendingUserBubble.textContent = (data.transcribed_text && String(data.transcribed_text).trim()) || '[Unrecognized]';
-          pendingUserBubble = null;
-        } else {
-          addMsg('user', data.transcribed_text || '[Unrecognized]');
-        }
-
-        // Agent message with play button
-  addMsg('agent', data.llm_response || '[No response]', { audioUrl: data.audio_url });
-  playAgentAudio(data.audio_url);
-
-        if (llmStatus) llmStatus.textContent = '';
-      })
-      .catch(err => {
-        if (pendingUserBubble) {
-          pendingUserBubble.textContent = '[Unrecognized]';
-          pendingUserBubble = null;
-        }
-        if (llmStatus) llmStatus.textContent = 'Error: ' + err.message;
-      });
+      if (llmStatus) llmStatus.textContent = 'Streaming…';
+      console.log('[stream] started');
+    } catch (err) {
+      console.error('[stream] start failed', err);
+      if (llmStatus) llmStatus.textContent = 'Mic error: ' + err.message;
+      try { streamWS && streamWS.close(); } catch(_){}
+      try { streamMedia && streamMedia.getTracks().forEach(t=>t.stop()); } catch(_){}
+    }
   }
 
   // Wire up events
@@ -325,74 +312,5 @@ function playAgentAudio(url, force = false) {
   echoToggle?.addEventListener('click', toggleEcho);
   micToggle?.addEventListener('click', toggleMic);
 
-  // ================= Day 16: Non-destructive Streaming Add-On =================
-  const streamBtn = document.getElementById('startAndstopBtn'); // Optional separate streaming control
-  const streamLog = document.getElementById('chat-log') || chatMessages; // Reuse chat if no dedicated log
-  let streamWS = null;
-  let streamRecorder = null;
-  let streamMedia = null;
-  let streamActive = false;
 
-  function logStream(msg, cls='stream') {
-    if (!streamLog) { console.log('[stream]', msg); return; }
-    const div = document.createElement('div');
-    div.className = `msg ${cls}`;
-    div.textContent = `[stream] ${msg}`;
-    streamLog.appendChild(div);
-    streamLog.scrollTop = streamLog.scrollHeight;
-  }
-
-  function wsProto() { return location.protocol === 'https:' ? 'wss' : 'ws'; }
-
-  async function startStreaming() {
-    if (streamActive) return;
-    try {
-      streamWS = new WebSocket(`${wsProto()}://${location.host}/ws/stream-audio`);
-      streamWS.onopen = () => logStream('WebSocket connected','status');
-      streamWS.onclose = () => logStream('WebSocket closed','status');
-      streamWS.onerror = e => logStream('WebSocket error','error');
-      streamWS.onmessage = e => {
-        try {
-          const d = JSON.parse(e.data);
-          if (d.type === 'ready') logStream('File: '+d.file,'status');
-          else if (d.type === 'progress') logStream('Progress '+d.bytes+' bytes','progress');
-            else if (d.type === 'done') logStream('Saved '+d.file+' ('+d.bytes+' bytes)','success');
-            else if (d.type === 'error') logStream('Error: '+d.message,'error');
-            else logStream((d.type||'msg')+': '+e.data,'meta');
-        } catch { logStream(e.data,'meta'); }
-      };
-
-      streamMedia = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : '';
-      streamRecorder = new MediaRecorder(streamMedia, mime? { mimeType: mime }: undefined);
-      streamRecorder.ondataavailable = ev => {
-        if (ev.data && ev.data.size > 0 && streamWS?.readyState === WebSocket.OPEN) streamWS.send(ev.data);
-      };
-      streamRecorder.onstop = () => {
-        try { streamWS?.readyState === WebSocket.OPEN && streamWS.send('END'); } catch {}
-        try { streamWS?.close(); } catch {}
-      };
-      streamRecorder.start(500);
-      streamActive = true;
-      if (streamBtn) { streamBtn.textContent = 'Stop Streaming'; streamBtn.classList.add('recording'); }
-      logStream('Streaming started…','status');
-    } catch (err) {
-      logStream('Start error: '+err.message,'error');
-      try { streamMedia?.getTracks().forEach(t=>t.stop()); } catch {}
-    }
-  }
-
-  function stopStreaming() {
-    if (!streamActive) return;
-    try { streamRecorder && streamRecorder.state !== 'inactive' && streamRecorder.stop(); } catch {}
-    try { streamMedia?.getTracks().forEach(t=>t.stop()); } catch {}
-    streamActive = false;
-    if (streamBtn) { streamBtn.textContent = 'Start Streaming'; streamBtn.classList.remove('recording'); }
-    logStream('Streaming stopped','status');
-  }
-
-  streamBtn?.addEventListener('click', e => { e.preventDefault(); streamActive ? stopStreaming() : startStreaming(); });
-  // Expose helpers for console debugging
-  window.__streaming = { startStreaming, stopStreaming };
-  // ========================================================================
 });
