@@ -49,14 +49,15 @@ app/
 ├── services/              # Separated domain/service logic
 │   ├── stt_service.py     # AssemblyAI transcription helpers
 │   ├── tts_service.py     # Murf.ai TTS client wrapper
-│   └── llm_service.py     # Gemini client + prompt builder
+│   ├── llm_service.py     # Gemini client + prompt builder
+│   └── streaming_transcriber.py # New file for AssemblyAI streaming transcription
 ├── schemas/               # Pydantic request/response models
 │   └── tts.py             # TextToSpeechRequest, ChatResponse, etc.
 ├── templates/
 │   └── index.html         # UI shell (chat + sidebar tools)
 ├── static/
 │   ├── css/style.css      # Styles (layout + responsive + theme)
-│   ├── JS/script.js       # Frontend logic (record, upload, autoplay)
+│   ├── js/script.js       # Frontend logic (record, upload, autoplay)
 │   ├── images/            # Logo, screenshot, demo GIF
 │   │   ├── logo.png
 │   │   ├── ui-screenshot.png
