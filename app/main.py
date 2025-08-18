@@ -14,6 +14,7 @@ from pathlib import Path
 load_dotenv()
 
 from services.stt_service import resilient_transcribe, transcribe_audio_bytes  # noqa: E402
+from services.streaming_transcriber import AssemblyAIStreamingTranscriber
 from services.tts_service import MurfTTSClient  # noqa: E402
 from services.llm_service import GeminiClient, build_chat_prompt  # noqa: E402
 from schemas.tts import (  # noqa: E402
@@ -52,36 +53,79 @@ templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "t
 CHAT_HISTORY: dict[str, list] = {}
 
 active_connections: set[WebSocket] = set()
+
+
+# Real-time streaming transcription using AssemblyAI
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
-    logger.info("✅ Ready for audio stream")
+    logger.info("✅ Ready for audio stream (AssemblyAI)")
 
+    async def send_transcript(transcript):
+        try:
+            await ws.send_text(transcript)
+        except Exception as e:
+            logger.error(f"Error sending transcript: {e}")
+
+    # AssemblyAI callback wrapper for FastAPI async
+    # Collect all transcripts for final statement
+    transcript_buffer = []
+    def transcript_callback(transcript):
+        import asyncio
+        import threading
+        transcript_buffer.append(transcript)
+        loop = None
+        main_thread = None
+        for t in threading.enumerate():
+            if t.name == 'MainThread':
+                main_thread = t
+                break
+        if main_thread:
+            try:
+                loop = asyncio.get_event_loop()
+            except Exception:
+                loop = None
+        if loop and loop.is_running():
+            asyncio.run_coroutine_threadsafe(send_transcript(transcript), loop)
+        else:
+            print(transcript)
+
+    # Print final statement after session ends
+    import atexit
+    def print_final_transcript():
+        if transcript_buffer:
+            print("Final statement:", transcript_buffer[-1])
+    atexit.register(print_final_transcript)
+
+    # Prepare audio file for saving
     uploads_dir = Path(__file__).parent / "uploads"
     uploads_dir.mkdir(exist_ok=True)
-    file_path = uploads_dir / f"rec_{datetime.now().strftime('%Y%m%d_%H%M%S')}.webm"
-
-    total = 0
+    file_path = uploads_dir / f"rec_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pcm"
+    total_bytes = 0
+    transcriber = AssemblyAIStreamingTranscriber(sample_rate=16000, transcript_callback=transcript_callback)
     try:
-        with open(file_path, "wb") as f:
+        with open(file_path, "ab") as audio_file:
             while True:
                 try:
                     data = await ws.receive_bytes()
-                    f.write(data)
-                    total += len(data)
-                    logger.info(f"[ws] received {len(data)} bytes (total={total})")
+                    if not data:
+                        continue
+                    audio_file.write(data)
+                    total_bytes += len(data)
+                    transcriber.stream_audio(data)
                 except WebSocketDisconnect:
-                    logger.info(f"🔴 Client disconnected, final size={total} bytes")
+                    logger.info(f"🔴 Client disconnected, final size={total_bytes} bytes")
                     break
                 except RuntimeError:
-                    # Handle accidental text frames
                     try:
                         txt = await ws.receive_text()
                         logger.warning(f"[ws] got text frame instead: {txt[:30]}")
                     except WebSocketDisconnect:
                         break
     finally:
-        logger.info(f"✅ Audio saved at {file_path} ({total} bytes)")
+        transcriber.close()
+        logger.info(f"✅ Audio saved at {file_path} ({total_bytes} bytes)")
+        logger.info("✅ Streaming session closed")
 
 
 

@@ -278,27 +278,57 @@ function playAgentAudio(url, force = false) {
       streamWS.onclose = () => console.log('[stream] ws close');
       streamWS.onerror = e => console.error('[stream] ws error', e);
 
-      streamMedia = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
-      streamRecorder = new MediaRecorder(streamMedia, { mimeType: mime });
-      let chunkCount = 0;
-      streamRecorder.ondataavailable = e => {
-        if (e.data && e.data.size > 0 && streamWS?.readyState === WebSocket.OPEN) {
-          e.data.arrayBuffer().then(buf => {
-            streamWS.send(buf);
-            chunkCount++;
-            if (chunkCount <= 5 || chunkCount % 10 === 0) console.log('[stream] sent chunk', chunkCount, 'size', buf.byteLength);
-          });
+      // Listen for real-time transcription messages from server
+      streamWS.onmessage = function(event) {
+        try {
+          const msg = event.data;
+          if (msg && typeof msg === 'string') {
+            addMsg('user', msg, {});
+            if (llmStatus) llmStatus.textContent = msg;
+          }
+        } catch (err) {
+          console.error('[stream] transcription parse error', err);
         }
       };
-      streamRecorder.onstop = () => console.log('[stream] recorder stopped');
-      streamRecorder.start(500); // every 500ms
-      // Force early first chunk in case of short press
-      setTimeout(()=>{ try { streamRecorder && streamRecorder.state==='recording' && streamRecorder.requestData(); } catch(_){} }, 300);
+
+      // Use Web Audio API for PCM streaming
+      streamMedia = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+      const source = audioCtx.createMediaStreamSource(streamMedia);
+      const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+      source.connect(processor);
+      processor.connect(audioCtx.destination);
+
+      processor.onaudioprocess = function(e) {
+        const inputData = e.inputBuffer.getChannelData(0); // mono channel
+        // Convert Float32 to 16-bit PCM
+        const buffer = new ArrayBuffer(inputData.length * 2);
+        const view = new DataView(buffer);
+        for (let i = 0; i < inputData.length; i++) {
+          let s = Math.max(-1, Math.min(1, inputData[i]));
+          view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+        }
+        if (streamWS && streamWS.readyState === WebSocket.OPEN) {
+          streamWS.send(buffer);
+        }
+      };
+
       streaming = true;
       setMicState(true);
       if (llmStatus) llmStatus.textContent = 'Streaming…';
       console.log('[stream] started');
+
+      // Cleanup on stop
+      streamWS.onclose = () => {
+        processor.disconnect();
+        source.disconnect();
+        audioCtx.close();
+        streamMedia.getTracks().forEach(t => t.stop());
+        streaming = false;
+        setMicState(false);
+        if (llmStatus) llmStatus.textContent = '';
+        console.log('[stream] ws closed and audio stopped');
+      };
     } catch (err) {
       console.error('[stream] start failed', err);
       if (llmStatus) llmStatus.textContent = 'Mic error: ' + err.message;
