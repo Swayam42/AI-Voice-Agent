@@ -279,17 +279,47 @@ function playAgentAudio(url, force = false) {
       streamWS.onerror = e => console.error('[stream] ws error', e);
 
       // Listen for real-time transcription messages from server
-      streamWS.onmessage = function(event) {
+    let liveRow = null; // we only create on final now
+    let lastPartial = '';
+    let lastDisplayed = '';
+    streamWS.onmessage = function(event) {
+      try {
+        const raw = event.data;
         try {
-          const msg = event.data;
-          if (msg && typeof msg === 'string') {
-            addMsg('user', msg, {});
-            if (llmStatus) llmStatus.textContent = msg;
+          const obj = JSON.parse(raw);
+          if (obj && obj.type === 'turn_end') {
+            const finalText = obj.transcript ? normalizeTranscript(obj.transcript) : (lastPartial || null);
+            if (!liveRow && finalText) {
+              liveRow = addMsg('user', finalText, {});
+              if (liveRow?.bubble) {
+                liveRow.bubble.classList.add('final');
+              }
+              lastDisplayed = finalText;
+            } else if (liveRow?.bubble && finalText && finalText !== lastDisplayed) {
+              liveRow.bubble.textContent = finalText;
+              lastDisplayed = finalText;
+            }
+            if (llmStatus) llmStatus.textContent = finalText ? ('Final: ' + finalText) : 'Turn ended';
+            liveRow = null; // reset for next utterance
+            lastPartial = '';
+            return;
           }
-        } catch (err) {
-          console.error('[stream] transcription parse error', err);
-        }
-      };
+        } catch { /* not JSON */ }
+        if (typeof raw === 'string' && raw.trim()) {
+          const text = normalizeTranscript(raw);
+            // store but don't render yet (avoid duplicates after formatting)
+            if (text !== lastPartial) {
+              lastPartial = text;
+              if (llmStatus) llmStatus.textContent = text;
+            }
+          }
+      } catch(err) {
+        console.error('[stream] transcription parse error', err);
+      }
+    };
+    function normalizeTranscript(t){
+      return t.replace(/\s+/g,' ').replace(/[\u200B-\u200D\uFEFF]/g,'').trim();
+    }
 
       // Use Web Audio API for PCM streaming
       streamMedia = await navigator.mediaDevices.getUserMedia({ audio: true });

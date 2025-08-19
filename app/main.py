@@ -6,8 +6,7 @@ import os
 import logging
 from dotenv import load_dotenv
 import assemblyai as aai
-import requests
-import json
+from starlette.websockets import WebSocketState
 from datetime import datetime
 from pathlib import Path
 
@@ -60,41 +59,57 @@ active_connections: set[WebSocket] = set()
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     logger.info("✅ Ready for audio stream (AssemblyAI)")
+    # Capture loop now so thread callbacks can schedule coroutines
+    import asyncio
+    loop = asyncio.get_running_loop()
+    ws_closed = False
+    last_partial_sent: str | None = None
+    last_final_sent: str | None = None
+    turn_finalized: bool = False
 
-    async def send_transcript(transcript):
+    # We disable partial transcript sending to avoid duplicate (partial vs final) lines in UI
+    async def send_transcript(transcript: str):
+        return  # no-op to prevent partial duplicate display
+
+    async def send_turn_end(transcript: str | None):
+        if ws_closed or ws.client_state != WebSocketState.CONNECTED:
+            return
+        # Always include transcript so frontend renders exactly one bubble per utterance
+        payload = {"type": "turn_end", "transcript": transcript or last_partial_sent or last_final_sent or ""}
         try:
-            await ws.send_text(transcript)
+            await ws.send_json(payload)
         except Exception as e:
-            logger.error(f"Error sending transcript: {e}")
+            logger.debug(f"(ignored) send final after close: {e}")
 
-    # AssemblyAI callback wrapper for FastAPI async
-    # Collect all transcripts for final statement
-    transcript_buffer = []
-    def transcript_callback(transcript):
-        import asyncio
-        import threading
+    # Buffers + thread-safe wrappers used by AssemblyAI SDK thread
+    transcript_buffer: list[str] = []
+    def transcript_callback(transcript: str):  # partial (suppressed from UI)
+        nonlocal last_partial_sent, last_final_sent, turn_finalized
+        if ws_closed or not transcript:
+            return
+        # Track last partial only (used if final arrives without transcript formatting)
+        last_partial_sent = transcript
         transcript_buffer.append(transcript)
-        loop = None
-        main_thread = None
-        for t in threading.enumerate():
-            if t.name == 'MainThread':
-                main_thread = t
-                break
-        if main_thread:
-            try:
-                loop = asyncio.get_event_loop()
-            except Exception:
-                loop = None
-        if loop and loop.is_running():
-            asyncio.run_coroutine_threadsafe(send_transcript(transcript), loop)
-        else:
-            print(transcript)
 
-    # Print final statement after session ends
+    def turn_callback(transcript: str):  # final (end_of_turn)
+        nonlocal last_final_sent, turn_finalized
+        if ws_closed or not transcript:
+            return
+        if transcript == last_final_sent:
+            return  # duplicate formatted final
+        turn_finalized = True
+        last_final_sent = transcript
+        if loop.is_running():
+            try:
+                asyncio.run_coroutine_threadsafe(send_turn_end(transcript), loop)
+            except RuntimeError:
+                pass
+
+    # At process exit (dev convenience only)
     import atexit
     def print_final_transcript():
         if transcript_buffer:
-            print("Final statement:", transcript_buffer[-1])
+            logger.info("Final statement: %s", transcript_buffer[-1])
     atexit.register(print_final_transcript)
 
     # Prepare audio file for saving
@@ -102,7 +117,11 @@ async def websocket_endpoint(ws: WebSocket):
     uploads_dir.mkdir(exist_ok=True)
     file_path = uploads_dir / f"rec_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pcm"
     total_bytes = 0
-    transcriber = AssemblyAIStreamingTranscriber(sample_rate=16000, transcript_callback=transcript_callback)
+    transcriber = AssemblyAIStreamingTranscriber(
+        sample_rate=16000,
+        partial_callback=transcript_callback,
+        final_callback=turn_callback
+    )
     try:
         with open(file_path, "ab") as audio_file:
             while True:
@@ -114,16 +133,23 @@ async def websocket_endpoint(ws: WebSocket):
                     total_bytes += len(data)
                     transcriber.stream_audio(data)
                 except WebSocketDisconnect:
+                    ws_closed = True
                     logger.info(f"🔴 Client disconnected, final size={total_bytes} bytes")
                     break
                 except RuntimeError:
+                    # Could be a text frame; attempt to handle gracefully
                     try:
                         txt = await ws.receive_text()
-                        logger.warning(f"[ws] got text frame instead: {txt[:30]}")
+                        logger.warning(f"[ws] got unexpected text frame: {txt[:30]}")
                     except WebSocketDisconnect:
+                        ws_closed = True
                         break
     finally:
-        transcriber.close()
+        ws_closed = True
+        try:
+            transcriber.close()
+        except Exception:
+            pass
         logger.info(f"✅ Audio saved at {file_path} ({total_bytes} bytes)")
         logger.info("✅ Streaming session closed")
 
