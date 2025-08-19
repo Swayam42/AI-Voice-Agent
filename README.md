@@ -50,7 +50,7 @@ app/
 │   ├── stt_service.py     # AssemblyAI transcription helpers
 │   ├── tts_service.py     # Murf.ai TTS client wrapper
 │   ├── llm_service.py     # Gemini client + prompt builder
-│   └── streaming_transcriber.py # New file for AssemblyAI streaming transcription
+│   └── streaming_transcriber.py # AssemblyAI streaming transcription
 ├── schemas/               # Pydantic request/response models
 │   └── tts.py             # TextToSpeechRequest, ChatResponse, etc.
 ├── templates/
