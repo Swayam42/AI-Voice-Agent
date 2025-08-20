@@ -279,9 +279,9 @@ function playAgentAudio(url, force = false) {
       streamWS.onerror = e => console.error('[stream] ws error', e);
 
       // Listen for real-time transcription messages from server
-    let liveRow = null; // we only create on final now
+    let liveRow = null; // active bubble while user is speaking
     let lastPartial = '';
-    let lastDisplayed = '';
+    let lastDisplayedFinal = '';
     streamWS.onmessage = function(event) {
       try {
         const raw = event.data;
@@ -289,17 +289,17 @@ function playAgentAudio(url, force = false) {
           const obj = JSON.parse(raw);
           if (obj && obj.type === 'turn_end') {
             const finalText = obj.transcript ? normalizeTranscript(obj.transcript) : (lastPartial || null);
+            // If we never created a live bubble (edge case), create now
             if (!liveRow && finalText) {
               liveRow = addMsg('user', finalText, {});
-              if (liveRow?.bubble) {
-                liveRow.bubble.classList.add('final');
-              }
-              lastDisplayed = finalText;
-            } else if (liveRow?.bubble && finalText && finalText !== lastDisplayed) {
+            } else if (liveRow?.bubble && finalText) {
               liveRow.bubble.textContent = finalText;
-              lastDisplayed = finalText;
+            }
+            if (liveRow?.bubble) {
+              liveRow.bubble.classList.add('final');
             }
             if (llmStatus) llmStatus.textContent = finalText ? ('Final: ' + finalText) : 'Turn ended';
+            lastDisplayedFinal = finalText || '';
             liveRow = null; // reset for next utterance
             lastPartial = '';
             return;
@@ -307,9 +307,13 @@ function playAgentAudio(url, force = false) {
         } catch { /* not JSON */ }
         if (typeof raw === 'string' && raw.trim()) {
           const text = normalizeTranscript(raw);
-            // store but don't render yet (avoid duplicates after formatting)
             if (text !== lastPartial) {
               lastPartial = text;
+              if (!liveRow) {
+                liveRow = addMsg('user', text, {});
+              } else if (liveRow?.bubble) {
+                liveRow.bubble.textContent = text;
+              }
               if (llmStatus) llmStatus.textContent = text;
             }
           }

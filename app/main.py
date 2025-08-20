@@ -4,6 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import os
 import logging
+import asyncio
 from dotenv import load_dotenv
 import assemblyai as aai
 from starlette.websockets import WebSocketState
@@ -67,9 +68,14 @@ async def websocket_endpoint(ws: WebSocket):
     last_final_sent: str | None = None
     turn_finalized: bool = False
 
-    # We disable partial transcript sending to avoid duplicate (partial vs final) lines in UI
+    # Send incremental (partial) transcript to client (as plain text frame) for live display
     async def send_transcript(transcript: str):
-        return  # no-op to prevent partial duplicate display
+        if ws_closed or ws.client_state != WebSocketState.CONNECTED:
+            return
+        try:
+            await ws.send_text(transcript)
+        except Exception as e:
+            logger.debug(f"(ignored) send partial after close: {e}")
 
     async def send_turn_end(transcript: str | None):
         if ws_closed or ws.client_state != WebSocketState.CONNECTED:
@@ -83,13 +89,23 @@ async def websocket_endpoint(ws: WebSocket):
 
     # Buffers + thread-safe wrappers used by AssemblyAI SDK thread
     transcript_buffer: list[str] = []
-    def transcript_callback(transcript: str):  # partial (suppressed from UI)
+    def transcript_callback(transcript: str):  # partial
         nonlocal last_partial_sent, last_final_sent, turn_finalized
         if ws_closed or not transcript:
             return
-        # Track last partial only (used if final arrives without transcript formatting)
+        # Deduplicate identical partials
+        if transcript == last_partial_sent:
+            return
         last_partial_sent = transcript
         transcript_buffer.append(transcript)
+        # Log partial transcript line (end_of_turn=False)
+        logger.info('[Transcript] %s (end_of_turn=False)', transcript)
+        # Stream partial to client
+        if loop.is_running():
+            try:
+                asyncio.run_coroutine_threadsafe(send_transcript(transcript), loop)
+            except RuntimeError:
+                pass
 
     def turn_callback(transcript: str):  # final (end_of_turn)
         nonlocal last_final_sent, turn_finalized
@@ -99,11 +115,28 @@ async def websocket_endpoint(ws: WebSocket):
             return  # duplicate formatted final
         turn_finalized = True
         last_final_sent = transcript
+        # Log final transcript line (end_of_turn=True)
+        logger.info('[Transcript] %s (end_of_turn=True)', transcript)
         if loop.is_running():
             try:
                 asyncio.run_coroutine_threadsafe(send_turn_end(transcript), loop)
             except RuntimeError:
                 pass
+        # Kick off streaming LLM generation (non-blocking)
+        async def run_llm_stream(final_text: str):
+            print(f"[LLM STREAM START] prompt: {final_text}")
+            # Run blocking stream in thread executor to avoid blocking event loop
+            def do_stream():
+                def on_chunk(chunk: str):
+                    # Log each LLM chunk as it arrives
+                    logger.info('[LLM Chunk] %s', chunk)
+                llm_client.stream_generate(final_text, on_chunk=on_chunk)
+            await asyncio.get_running_loop().run_in_executor(None, do_stream)
+            print("[LLM STREAM END]\n")
+        try:
+            asyncio.run_coroutine_threadsafe(run_llm_stream(transcript), loop)
+        except RuntimeError:
+            pass
 
     # At process exit (dev convenience only)
     import atexit
