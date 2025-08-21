@@ -13,11 +13,12 @@ from pathlib import Path
 
 load_dotenv()
 
-from services.stt_service import resilient_transcribe, transcribe_audio_bytes  # noqa: E402
+from services.stt_service import resilient_transcribe, transcribe_audio_bytes  
 from services.streaming_transcriber import AssemblyAIStreamingTranscriber
-from services.tts_service import MurfTTSClient  # noqa: E402
-from services.llm_service import GeminiClient, build_chat_prompt  # noqa: E402
-from schemas.tts import (  # noqa: E402
+from services.tts_service import MurfTTSClient 
+from services.murf_ws_service import MurfWebSocketStreamer  
+from services.llm_service import GeminiClient, build_chat_prompt 
+from schemas.tts import ( 
     TextToSpeechRequest,
     TextToSpeechResponse,
     EchoResponse,
@@ -127,10 +128,18 @@ async def websocket_endpoint(ws: WebSocket):
             print(f"[LLM STREAM START] prompt: {final_text}")
             # Run blocking stream in thread executor to avoid blocking event loop
             def do_stream():
+                murf_streamer = MurfWebSocketStreamer(MURF_API_KEY, voice_id="en-US-ken", context_id="voice_agent_ctx")
                 def on_chunk(chunk: str):
-                    # Log each LLM chunk as it arrives
                     logger.info('[LLM Chunk] %s', chunk)
+                    try:
+                        murf_streamer.send_text_chunk(chunk)
+                    except Exception as e:
+                        logger.error('Murf send error: %s', e)
                 llm_client.stream_generate(final_text, on_chunk=on_chunk)
+                try:
+                    murf_streamer.finalize()
+                except Exception as e:
+                    logger.error('Murf synth error: %s', e)
             await asyncio.get_running_loop().run_in_executor(None, do_stream)
             print("[LLM STREAM END]\n")
         try:
