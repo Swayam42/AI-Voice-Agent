@@ -136,8 +136,23 @@ async def websocket_endpoint(ws: WebSocket):
                     except Exception as e:
                         logger.error('Murf send error: %s', e)
                 llm_client.stream_generate(final_text, on_chunk=on_chunk)
+                # Forward base64 audio chunks to this websocket client
+                def push_audio_b64(b64: str):
+                    if ws_closed or ws.client_state != WebSocketState.CONNECTED:
+                        return
+                    try:
+                        asyncio.run_coroutine_threadsafe(ws.send_json({"type": "tts_chunk", "audio_b64": b64}), loop)
+                    except Exception:
+                        pass
+                def push_done():
+                    if ws_closed or ws.client_state != WebSocketState.CONNECTED:
+                        return
+                    try:
+                        asyncio.run_coroutine_threadsafe(ws.send_json({"type": "tts_done"}), loop)
+                    except Exception:
+                        pass
                 try:
-                    murf_streamer.finalize()
+                    murf_streamer.finalize(on_audio_chunk=push_audio_b64, on_done=push_done)
                 except Exception as e:
                     logger.error('Murf synth error: %s', e)
             await asyncio.get_running_loop().run_in_executor(None, do_stream)

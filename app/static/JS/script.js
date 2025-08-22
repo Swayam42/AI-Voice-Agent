@@ -287,6 +287,17 @@ function playAgentAudio(url, force = false) {
         const raw = event.data;
         try {
           const obj = JSON.parse(raw);
+          if (obj && obj.type === 'tts_chunk' && typeof obj.audio_b64 === 'string') {
+            window.__ttsChunks = window.__ttsChunks || [];
+            window.__ttsChunks.push(obj.audio_b64);
+            console.log(`[client] TTS chunk received #${window.__ttsChunks.length}, len=${obj.audio_b64.length}`);
+            return;
+          }
+          if (obj && obj.type === 'tts_done') {
+            const n = (window.__ttsChunks && window.__ttsChunks.length) || 0;
+            console.log(`[client] TTS streaming done, total chunks=${n}`);
+            return;
+          }
           if (obj && obj.type === 'turn_end') {
             const finalText = obj.transcript ? normalizeTranscript(obj.transcript) : (lastPartial || null);
             // If we never created a live bubble (edge case), create now

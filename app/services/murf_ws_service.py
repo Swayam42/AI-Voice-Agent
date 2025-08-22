@@ -39,7 +39,7 @@ class MurfWebSocketStreamer:
         msg = {"text": text, "end": False, "context_id": self.context_id}
         self.ws.send(json.dumps(msg))
 
-    def finalize(self):
+    def finalize(self, on_audio_chunk=None, on_done=None):
         if not self.ws: return
         self.ws.send(json.dumps({"text": "", "end": True, "context_id": self.context_id}))
         try:
@@ -49,8 +49,19 @@ class MurfWebSocketStreamer:
                 data = json.loads(raw)
                 if "audio" in data:
                     a = data["audio"]
-                    print(f"[MURF AUDIO B64 CHUNK] {a[:100]}... len={len(a)}")
+                    if on_audio_chunk:
+                        try:
+                            on_audio_chunk(a)
+                        except Exception:
+                            pass
+                    else:
+                        print(f"[MURF AUDIO B64 CHUNK] {a[:100]}... len={len(a)}")
                 if data.get("final"):
+                    if on_done:
+                        try:
+                            on_done()
+                        except Exception:
+                            pass
                     break
         except Exception:
             pass
