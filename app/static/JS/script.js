@@ -33,6 +33,55 @@ document.addEventListener('DOMContentLoaded', () => {
   const uiSoundStop = new Audio('/static/sounds/mic_stop.mp3');
   const uiSoundMute = new Audio('/static/sounds/mic_mute.mp3');
 
+  // ---- Murf Streaming Audio Playback (WAV buffering) ----
+  let murfAudioCtx = null;
+  let murfAudioChunks = [];
+  let murfPlaying = false;
+
+  function initMurfStreamPlayback() {
+    if (!murfAudioCtx) {
+      murfAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    murfAudioChunks = [];
+    murfPlaying = true;
+  }
+
+  function pushMurfAudioChunk(b64) {
+    // Decode base64 to Uint8Array and buffer
+    const binary = atob(b64);
+    const len = binary.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+    console.log('[Murf] Received audio chunk, length:', len);
+    murfAudioChunks.push(bytes);
+  }
+
+  function finalizeMurfStream() {
+    murfPlaying = false;
+    if (!murfAudioCtx || murfAudioChunks.length === 0) return;
+    // Concatenate all chunks into one Uint8Array
+    const totalLen = murfAudioChunks.reduce((acc, arr) => acc + arr.length, 0);
+    const fullAudio = new Uint8Array(totalLen);
+    let offset = 0;
+    for (const arr of murfAudioChunks) {
+      fullAudio.set(arr, offset);
+      offset += arr.length;
+    }
+    // Decode and play the full WAV file
+    murfAudioCtx.decodeAudioData(fullAudio.buffer, (audioBuffer) => {
+      const source = murfAudioCtx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(murfAudioCtx.destination);
+      source.start();
+    }, (err) => {
+      console.error('Murf WAV decode error', err);
+    });
+    // Optionally close context after a delay
+    setTimeout(() => {
+      try { murfAudioCtx && murfAudioCtx.close(); murfAudioCtx = null; } catch(_){}
+    }, 3000);
+  }
+
   // ---- Autoplay Reliability Helpers (no external silence file needed) ----
   let audioUnlocked = false;
   let pendingAutoPlayUrl = null;
@@ -287,16 +336,16 @@ function playAgentAudio(url, force = false) {
         const raw = event.data;
         try {
           const obj = JSON.parse(raw);
-          if (obj && obj.type === 'tts_chunk' && typeof obj.audio_b64 === 'string') {
-            window.__ttsChunks = window.__ttsChunks || [];
-            window.__ttsChunks.push(obj.audio_b64);
-            console.log(`[client] TTS chunk received #${window.__ttsChunks.length}, len=${obj.audio_b64.length}`);
-            return;
+            if (obj && obj.type === 'tts_chunk' && typeof obj.audio_b64 === 'string') {
+              // Streaming Murf audio chunk received
+              if (!murfPlaying) initMurfStreamPlayback();
+              pushMurfAudioChunk(obj.audio_b64);
+              return;
           }
-          if (obj && obj.type === 'tts_done') {
-            const n = (window.__ttsChunks && window.__ttsChunks.length) || 0;
-            console.log(`[client] TTS streaming done, total chunks=${n}`);
-            return;
+            if (obj && obj.type === 'tts_done') {
+              finalizeMurfStream();
+              console.log('[client] TTS streaming done');
+              return;
           }
           if (obj && obj.type === 'turn_end') {
             const finalText = obj.transcript ? normalizeTranscript(obj.transcript) : (lastPartial || null);
@@ -311,6 +360,10 @@ function playAgentAudio(url, force = false) {
             }
             if (llmStatus) llmStatus.textContent = finalText ? ('Final: ' + finalText) : 'Turn ended';
             lastDisplayedFinal = finalText || '';
+           
+            if (obj.llm_response) {
+              addMsg('agent', obj.llm_response, {});
+            }
             liveRow = null; // reset for next utterance
             lastPartial = '';
             return;

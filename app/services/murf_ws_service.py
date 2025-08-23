@@ -21,7 +21,8 @@ class MurfWebSocketStreamer:
         if self.ws: return
         last_err = None
         for base in PRIMARY_WS_URLS:
-            url = f"{base}?api-key={self.api_key}&sample_rate=44100&channel_type=MONO&format=WAV"
+            # Revert to WAV format for reliable audio
+            url = f"{base}?api-key={self.api_key}&sample_rate=24000&channel_type=MONO&format=WAV"
             try:
                 self.ws = websocket.create_connection(url, timeout=30)
                 voice_cfg = {"voice_config": {"voiceId": self.voice_id}, "context_id": self.context_id}
