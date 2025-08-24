@@ -21,11 +21,20 @@ class MurfWebSocketStreamer:
         if self.ws: return
         last_err = None
         for base in PRIMARY_WS_URLS:
-            # Revert to WAV format for reliable audio
             url = f"{base}?api-key={self.api_key}&sample_rate=24000&channel_type=MONO&format=WAV"
             try:
                 self.ws = websocket.create_connection(url, timeout=30)
-                voice_cfg = {"voice_config": {"voiceId": self.voice_id}, "context_id": self.context_id}
+                # Send voice config with context_id first (NO text here)
+                voice_cfg = {
+                    "voice_config": {
+                        "voiceId": self.voice_id,
+                        "style": "Conversational",
+                        "rate": 0,
+                        "pitch": 0,
+                        "variation": 1
+                    },
+                    "context_id": self.context_id
+                }
                 self.ws.send(json.dumps(voice_cfg))
                 logger.info("[MurfWS] Connected %s", base)
                 return
@@ -34,15 +43,20 @@ class MurfWebSocketStreamer:
                 logger.warning("[MurfWS] Connect failed %s -> %s", base, e)
         raise RuntimeError(f"Unable to connect to Murf WebSocket (last error: {last_err})")
 
-    def send_text_chunk(self, text: str):
+    def send_text_chunk(self, text: str, end=False):
         if not text.strip(): return
         self.connect()
-        msg = {"text": text, "end": False, "context_id": self.context_id}
+        # Send text payload with context_id and end flag immediately after voice config
+        msg = {
+            "context_id": self.context_id,
+            "text": text,
+            "end": end
+        }
         self.ws.send(json.dumps(msg))
 
     def finalize(self, on_audio_chunk=None, on_done=None):
         if not self.ws: return
-        self.ws.send(json.dumps({"text": "", "end": True, "context_id": self.context_id}))
+        # Only finalize session, do NOT send text here
         try:
             while True:
                 raw = self.ws.recv()

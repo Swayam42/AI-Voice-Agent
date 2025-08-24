@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, File, UploadFile, Request, WebSocket, WebSocketDisconnect
+import uuid
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -59,6 +60,10 @@ active_connections: set[WebSocket] = set()
 # Real-time streaming transcription using AssemblyAI
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
+    # Get session_id from query params or generate one
+    session_id = ws.query_params.get('session_id') if hasattr(ws, 'query_params') else None
+    if not session_id:
+        session_id = str(uuid.uuid4())
     await ws.accept()
     logger.info("✅ Ready for audio stream (AssemblyAI)")
     # Capture loop now so thread callbacks can schedule coroutines
@@ -82,11 +87,71 @@ async def websocket_endpoint(ws: WebSocket):
         if ws_closed or ws.client_state != WebSocketState.CONNECTED:
             return
         # Always include transcript so frontend renders exactly one bubble per utterance
-        payload = {"type": "turn_end", "transcript": transcript or last_partial_sent or last_final_sent or ""}
+        # Also include Gemini LLM response for UI
+        user_text = transcript or last_partial_sent or last_final_sent or ""
         try:
+            # Build prompt from history
+            history = append_history(session_id, "user", user_text)
+            prompt = build_chat_prompt(history)
+            llm_response = llm_client.generate(prompt)
+            # Sanitize and strictly limit Gemini response for Murf TTS reliability
+            import re, uuid
+            # Remove emojis and special symbols
+            llm_response = re.sub(r'[^\x00-\x7F]+', '', llm_response)
+            # Ensure proper punctuation
+            if not llm_response.endswith(('.', '!', '?')):
+                llm_response += '.'
+            # Limit to 120 chars for short, reliable Murf answers
+            if len(llm_response) > 120:
+                sentences = re.split(r'(?<=[.!?])\s+', llm_response.strip())
+                short_resp = ''
+                for s in sentences:
+                    if len(short_resp) + len(s) <= 120:
+                        short_resp += (s + ' ')
+                    else:
+                        break
+                llm_response = short_resp.strip()
+            # Generate a unique context_id for this turn
+            murf_context_id = f"turn_{uuid.uuid4().hex[:8]}"
+            append_history(session_id, "assistant", llm_response)
+            payload = {
+                "type": "turn_end",
+                "transcript": user_text,
+                "llm_response": llm_response or "",
+                "history": CHAT_HISTORY.get(session_id, [])[-20:]
+            }
             await ws.send_json(payload)
+            # Murf TTS streaming: send full response with context_id and end=True
+            async def run_llm_stream():
+                print(f"[LLM STREAM START] prompt: {prompt}")
+                def do_stream():
+                    murf_streamer = MurfWebSocketStreamer(MURF_API_KEY, voice_id="en-US-ken", context_id=murf_context_id)
+                    logger.info('[Murf TTS] context_id=%s text=%s', murf_context_id, llm_response)
+                    try:
+                        murf_streamer.connect()
+                        def push_audio_b64(b64: str):
+                            if ws_closed or ws.client_state != WebSocketState.CONNECTED:
+                                return
+                            try:
+                                asyncio.run_coroutine_threadsafe(ws.send_json({"type": "tts_chunk", "audio_b64": b64}), loop)
+                            except Exception:
+                                pass
+                        def push_done():
+                            if ws_closed or ws.client_state != WebSocketState.CONNECTED:
+                                return
+                            try:
+                                asyncio.run_coroutine_threadsafe(ws.send_json({"type": "tts_done"}), loop)
+                            except Exception:
+                                pass
+                        murf_streamer.send_text_chunk(llm_response, end=True)
+                        murf_streamer.finalize(on_audio_chunk=push_audio_b64, on_done=push_done)
+                    except Exception as e:
+                        logger.error('Murf synth error: %s', e)
+                await asyncio.get_running_loop().run_in_executor(None, do_stream)
+                print("[LLM STREAM END]\n")
+            asyncio.run_coroutine_threadsafe(run_llm_stream(), loop)
         except Exception as e:
-            logger.debug(f"(ignored) send final after close: {e}")
+            logger.error(f"LLM error: {e}")
 
     # Buffers + thread-safe wrappers used by AssemblyAI SDK thread
     transcript_buffer: list[str] = []
@@ -123,44 +188,7 @@ async def websocket_endpoint(ws: WebSocket):
                 asyncio.run_coroutine_threadsafe(send_turn_end(transcript), loop)
             except RuntimeError:
                 pass
-        # Kick off streaming LLM generation (non-blocking)
-        async def run_llm_stream(final_text: str):
-            print(f"[LLM STREAM START] prompt: {final_text}")
-            # Run blocking stream in thread executor to avoid blocking event loop
-            def do_stream():
-                murf_streamer = MurfWebSocketStreamer(MURF_API_KEY, voice_id="en-US-ken", context_id="voice_agent_ctx")
-                def on_chunk(chunk: str):
-                    logger.info('[LLM Chunk] %s', chunk)
-                    try:
-                        murf_streamer.send_text_chunk(chunk)
-                    except Exception as e:
-                        logger.error('Murf send error: %s', e)
-                llm_client.stream_generate(final_text, on_chunk=on_chunk)
-                # Forward base64 audio chunks to this websocket client
-                def push_audio_b64(b64: str):
-                    if ws_closed or ws.client_state != WebSocketState.CONNECTED:
-                        return
-                    try:
-                        asyncio.run_coroutine_threadsafe(ws.send_json({"type": "tts_chunk", "audio_b64": b64}), loop)
-                    except Exception:
-                        pass
-                def push_done():
-                    if ws_closed or ws.client_state != WebSocketState.CONNECTED:
-                        return
-                    try:
-                        asyncio.run_coroutine_threadsafe(ws.send_json({"type": "tts_done"}), loop)
-                    except Exception:
-                        pass
-                try:
-                    murf_streamer.finalize(on_audio_chunk=push_audio_b64, on_done=push_done)
-                except Exception as e:
-                    logger.error('Murf synth error: %s', e)
-            await asyncio.get_running_loop().run_in_executor(None, do_stream)
-            print("[LLM STREAM END]\n")
-        try:
-            asyncio.run_coroutine_threadsafe(run_llm_stream(transcript), loop)
-        except RuntimeError:
-            pass
+    # Streaming now handled in send_turn_end for consistent LLM response
 
     # At process exit (dev convenience only)
     import atexit

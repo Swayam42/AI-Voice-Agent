@@ -37,6 +37,8 @@ document.addEventListener('DOMContentLoaded', () => {
   let murfAudioCtx = null;
   let murfAudioChunks = [];
   let murfPlaying = false;
+  let murfFirstChunk = true;
+  let murfSourceNode = null;
 
   function initMurfStreamPlayback() {
     if (!murfAudioCtx) {
@@ -44,6 +46,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     murfAudioChunks = [];
     murfPlaying = true;
+  murfFirstChunk = true;
+  // Stop any previous source cleanly
+  try { if (murfSourceNode) { murfSourceNode.onended = null; murfSourceNode.stop(0); } } catch(_) {}
+  murfSourceNode = null;
+    // Optionally show buffering/loading indicator
+    if (llmStatus) llmStatus.textContent = 'Buffering Murf audio…';
   }
 
   function pushMurfAudioChunk(b64) {
@@ -52,13 +60,21 @@ document.addEventListener('DOMContentLoaded', () => {
     const len = binary.length;
     const bytes = new Uint8Array(len);
     for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
-    console.log('[Murf] Received audio chunk, length:', len);
-    murfAudioChunks.push(bytes);
+    // If a non-first chunk accidentally includes a WAV header, strip it
+    // WAV header starts with 'RIFF' (52 49 46 46)
+    if (!murfFirstChunk && len >= 44 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) {
+      murfAudioChunks.push(bytes.subarray(44));
+    } else {
+      murfAudioChunks.push(bytes);
+    }
+    murfFirstChunk = false;
+    // console.log('[Murf] Received audio chunk, length:', len);
   }
 
   function finalizeMurfStream() {
     murfPlaying = false;
     if (!murfAudioCtx || murfAudioChunks.length === 0) return;
+  try { if (murfAudioCtx.state === 'suspended') murfAudioCtx.resume(); } catch(_) {}
     // Concatenate all chunks into one Uint8Array
     const totalLen = murfAudioChunks.reduce((acc, arr) => acc + arr.length, 0);
     const fullAudio = new Uint8Array(totalLen);
@@ -67,19 +83,39 @@ document.addEventListener('DOMContentLoaded', () => {
       fullAudio.set(arr, offset);
       offset += arr.length;
     }
+    // If first chunk looked like WAV, fix RIFF sizes to reflect concatenated data
+    if (murfAudioChunks.length > 0 && murfAudioChunks[0].length >= 44) {
+      const first = murfAudioChunks[0];
+      if (first[0] === 0x52 && first[1] === 0x49 && first[2] === 0x46 && first[3] === 0x46) {
+        // Update ChunkSize (at offset 4) and Subchunk2Size (at offset 40)
+        const view = new DataView(fullAudio.buffer);
+        const dataSize = fullAudio.length - 44; // bytes after header
+        // ChunkSize = 36 + Subchunk2Size
+        view.setUint32(4, 36 + dataSize, true);
+        view.setUint32(40, dataSize, true);
+      }
+    }
     // Decode and play the full WAV file
     murfAudioCtx.decodeAudioData(fullAudio.buffer, (audioBuffer) => {
       const source = murfAudioCtx.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(murfAudioCtx.destination);
+      murfSourceNode = source;
+      // Update status
+      if (llmStatus) llmStatus.textContent = 'Speaking…';
+      // Close context only after playback finishes to avoid cutting tail
+      source.onended = () => {
+        try { source.disconnect(); } catch(_) {}
+        if (llmStatus) llmStatus.textContent = '';
+        try { murfAudioCtx && murfAudioCtx.close(); } catch(_) {}
+        murfAudioCtx = null;
+        murfSourceNode = null;
+      };
       source.start();
     }, (err) => {
       console.error('Murf WAV decode error', err);
+      if (llmStatus) llmStatus.textContent = 'Audio decode error';
     });
-    // Optionally close context after a delay
-    setTimeout(() => {
-      try { murfAudioCtx && murfAudioCtx.close(); murfAudioCtx = null; } catch(_){}
-    }, 3000);
   }
 
   // ---- Autoplay Reliability Helpers (no external silence file needed) ----

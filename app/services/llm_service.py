@@ -105,8 +105,8 @@ class GeminiClient:
 def build_chat_prompt(history: list) -> str:
     lines = [
         "You are a helpful, friendly AI assistant who speaks naturally like an Indian English speaker.",
-        "Reply in a polite, clear, and engaging manner, providing enough context but not too long.",
-        "Use simple examples if needed, keep answers conversational and informative.",
+        "Reply in a polite, clear, and engaging manner",
+        "keep answers conversational and informative.",
     ]
     lines.extend([f"{('User' if msg['role'] == 'user' else 'Assistant')}: {msg['content']}" for msg in history[-10:]])
     lines.append("Assistant:")
