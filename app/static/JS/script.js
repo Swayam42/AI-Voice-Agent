@@ -33,52 +33,114 @@ document.addEventListener('DOMContentLoaded', () => {
   const uiSoundStop = new Audio('/static/sounds/mic_stop.mp3');
   const uiSoundMute = new Audio('/static/sounds/mic_mute.mp3');
 
-  // ---- Autoplay Reliability Helpers ----
+  // ---- Murf Streaming Audio Playback (WAV buffering) ----
+  let murfAudioCtx = null;
+  let murfAudioChunks = [];
+  let murfPlaying = false;
+  let murfFirstChunk = true;
+  let murfSourceNode = null;
+
+  function initMurfStreamPlayback() {
+    if (!murfAudioCtx) {
+      murfAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    murfAudioChunks = [];
+    murfPlaying = true;
+  murfFirstChunk = true;
+  // Stop any previous source cleanly
+  try { if (murfSourceNode) { murfSourceNode.onended = null; murfSourceNode.stop(0); } } catch(_) {}
+  murfSourceNode = null;
+    // Optionally show buffering/loading indicator
+    if (llmStatus) llmStatus.textContent = 'Buffering Murf audio…';
+  }
+
+  function pushMurfAudioChunk(b64) {
+    // Decode base64 to Uint8Array and buffer
+    const binary = atob(b64);
+    const len = binary.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+    // If a non-first chunk accidentally includes a WAV header, strip it
+    // WAV header starts with 'RIFF' (52 49 46 46)
+    if (!murfFirstChunk && len >= 44 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) {
+      murfAudioChunks.push(bytes.subarray(44));
+    } else {
+      murfAudioChunks.push(bytes);
+    }
+    murfFirstChunk = false;
+    // console.log('[Murf] Received audio chunk, length:', len);
+  }
+
+  function finalizeMurfStream() {
+    murfPlaying = false;
+    if (!murfAudioCtx || murfAudioChunks.length === 0) return;
+  try { if (murfAudioCtx.state === 'suspended') murfAudioCtx.resume(); } catch(_) {}
+    // Concatenate all chunks into one Uint8Array
+    const totalLen = murfAudioChunks.reduce((acc, arr) => acc + arr.length, 0);
+    const fullAudio = new Uint8Array(totalLen);
+    let offset = 0;
+    for (const arr of murfAudioChunks) {
+      fullAudio.set(arr, offset);
+      offset += arr.length;
+    }
+    // If first chunk looked like WAV, fix RIFF sizes to reflect concatenated data
+    if (murfAudioChunks.length > 0 && murfAudioChunks[0].length >= 44) {
+      const first = murfAudioChunks[0];
+      if (first[0] === 0x52 && first[1] === 0x49 && first[2] === 0x46 && first[3] === 0x46) {
+        // Update ChunkSize (at offset 4) and Subchunk2Size (at offset 40)
+        const view = new DataView(fullAudio.buffer);
+        const dataSize = fullAudio.length - 44; // bytes after header
+        // ChunkSize = 36 + Subchunk2Size
+        view.setUint32(4, 36 + dataSize, true);
+        view.setUint32(40, dataSize, true);
+      }
+    }
+    // Decode and play the full WAV file
+    murfAudioCtx.decodeAudioData(fullAudio.buffer, (audioBuffer) => {
+      const source = murfAudioCtx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(murfAudioCtx.destination);
+      murfSourceNode = source;
+      // Update status
+      if (llmStatus) llmStatus.textContent = 'Speaking…';
+      // Close context only after playback finishes to avoid cutting tail
+      source.onended = () => {
+        try { source.disconnect(); } catch(_) {}
+        if (llmStatus) llmStatus.textContent = '';
+        try { murfAudioCtx && murfAudioCtx.close(); } catch(_) {}
+        murfAudioCtx = null;
+        murfSourceNode = null;
+      };
+      source.start();
+    }, (err) => {
+      console.error('Murf WAV decode error', err);
+      if (llmStatus) llmStatus.textContent = 'Audio decode error';
+    });
+  }
+
+  // ---- Autoplay Reliability Helpers (no external silence file needed) ----
   let audioUnlocked = false;
   let pendingAutoPlayUrl = null;
-
-function unlockAudioIfNeeded() {
-  if (audioUnlocked || !agentAudio) return;
-
-  agentAudio.src = "/static/silence.mp3"; // a 0.1s silent mp3 you place in static
-  agentAudio.play().then(() => {
-    agentAudio.pause();
-    agentAudio.currentTime = 0;
-    audioUnlocked = true;
-    console.log("Audio unlocked");
-    if (pendingAutoPlayUrl) {
-      const u = pendingAutoPlayUrl;
-      pendingAutoPlayUrl = null;
-      playAgentAudio(u, true);
-    }
-  }).catch(err => {
-    console.warn("Unlock attempt failed:", err);
-    // fallback to WebAudio silent oscillator
+  function unlockAudioIfNeeded() {
+    if (audioUnlocked) return;
     try {
       const Ctx = window.AudioContext || window.webkitAudioContext;
       if (Ctx) {
         const ctx = new Ctx();
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        gain.gain.value = 0;
-        osc.connect(gain).connect(ctx.destination);
-        osc.start();
-        setTimeout(() => {
-          osc.stop();
-          ctx.close();
-          audioUnlocked = true;
-          if (pendingAutoPlayUrl) {
-            const u = pendingAutoPlayUrl;
-            pendingAutoPlayUrl = null;
-            playAgentAudio(u, true);
-          }
-        }, 50);
+        const buffer = ctx.createBuffer(1, 1, 22050); // 1 sample silent buffer
+        const src = ctx.createBufferSource();
+        src.buffer = buffer;
+        src.connect(ctx.destination);
+        src.start();
+        setTimeout(() => { try { src.stop(); ctx.close(); } catch(_){} }, 25);
+        audioUnlocked = true;
+        if (pendingAutoPlayUrl) { const u = pendingAutoPlayUrl; pendingAutoPlayUrl = null; playAgentAudio(u, true); }
+        return;
       }
-    } catch (_) {
-      audioUnlocked = true;
-    }
-  });
-}
+    } catch(e) { console.warn('Audio unlock fallback', e); }
+    audioUnlocked = true;
+    if (pendingAutoPlayUrl) { const u = pendingAutoPlayUrl; pendingAutoPlayUrl = null; playAgentAudio(u, true); }
+  }
 
 
   // Auto-play helper for agent audio
@@ -276,75 +338,143 @@ function playAgentAudio(url, force = false) {
     });
   }
 
-  // LLM: Mic toggle and chat flow
-  function toggleMic() {
-  // Unlock audio on first user gesture
-  unlockAudioIfNeeded();
+  // Minimal WebSocket streaming toggle (replaces prior LLM chat flow)
+  let streamWS = null;
+  let streamMedia = null;
+  let streamRecorder = null;
+  let streaming = false;
 
-  if (isMicRecording) {
-    micRecorder && micRecorder.state !== 'inactive' && micRecorder.stop();
-    return;
-  }
+  async function toggleMic() {
+    unlockAudioIfNeeded();
+    if (streaming) {
+      try { streamRecorder && streamRecorder.state === 'recording' && streamRecorder.stop(); } catch(_){}
+      try { streamMedia && streamMedia.getTracks().forEach(t=>t.stop()); } catch(_){}
+      try { streamWS && streamWS.readyState === WebSocket.OPEN && streamWS.close(); } catch(_){}
+      streaming = false;
+      setMicState(false);
+      if (llmStatus) llmStatus.textContent = '';
+      console.log('[stream] stopped');
+      return;
+    }
+    try {
+      streamWS = new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/ws');
+      streamWS.binaryType = 'arraybuffer';
+      streamWS.onopen = () => console.log('[stream] ws open');
+      streamWS.onclose = () => console.log('[stream] ws close');
+      streamWS.onerror = e => console.error('[stream] ws error', e);
 
-  navigator.mediaDevices.getUserMedia({ audio: true })
-    .then(stream => {
-      micChunks = [];
-      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') 
-        ? 'audio/webm;codecs=opus' 
-        : 'audio/ogg;codecs=opus';
-      micRecorder = new MediaRecorder(stream, { mimeType: mime });
-      micRecorder.ondataavailable = e => e.data && micChunks.push(e.data);
-      micRecorder.onstop = () => handleMicStop(stream, mime);
-      micRecorder.start();
+      // Listen for real-time transcription messages from server
+    let liveRow = null; // active bubble while user is speaking
+    let lastPartial = '';
+    let lastDisplayedFinal = '';
+    streamWS.onmessage = function(event) {
+      try {
+        const raw = event.data;
+        try {
+          const obj = JSON.parse(raw);
+            if (obj && obj.type === 'tts_chunk' && typeof obj.audio_b64 === 'string') {
+              // Streaming Murf audio chunk received
+              if (!murfPlaying) initMurfStreamPlayback();
+              pushMurfAudioChunk(obj.audio_b64);
+              return;
+          }
+            if (obj && obj.type === 'tts_done') {
+              finalizeMurfStream();
+              console.log('[client] TTS streaming done');
+              return;
+          }
+          if (obj && obj.type === 'turn_end') {
+            const finalText = obj.transcript ? normalizeTranscript(obj.transcript) : (lastPartial || null);
+            // If we never created a live bubble (edge case), create now
+            if (!liveRow && finalText) {
+              liveRow = addMsg('user', finalText, {});
+            } else if (liveRow?.bubble && finalText) {
+              liveRow.bubble.textContent = finalText;
+            }
+            if (liveRow?.bubble) {
+              liveRow.bubble.classList.add('final');
+            }
+            if (llmStatus) llmStatus.textContent = finalText ? ('Final: ' + finalText) : 'Turn ended';
+            lastDisplayedFinal = finalText || '';
+           
+            if (obj.llm_response) {
+              addMsg('agent', obj.llm_response, {});
+            }
+            liveRow = null; // reset for next utterance
+            lastPartial = '';
+            return;
+          }
+        } catch { /* not JSON */ }
+        if (typeof raw === 'string' && raw.trim()) {
+          const text = normalizeTranscript(raw);
+            if (text !== lastPartial) {
+              lastPartial = text;
+              if (!liveRow) {
+                liveRow = addMsg('user', text, {});
+              } else if (liveRow?.bubble) {
+                liveRow.bubble.textContent = text;
+              }
+              if (llmStatus) llmStatus.textContent = text;
+            }
+          }
+      } catch(err) {
+        console.error('[stream] transcription parse error', err);
+      }
+    };
+    function normalizeTranscript(t){
+      return t.replace(/\s+/g,' ').replace(/[\u200B-\u200D\uFEFF]/g,'').trim();
+    }
+
+      // Use Web Audio API for PCM streaming
+      streamMedia = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+      const source = audioCtx.createMediaStreamSource(streamMedia);
+      const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+      source.connect(processor);
+      processor.connect(audioCtx.destination);
+
+      processor.onaudioprocess = function(e) {
+        const inputData = e.inputBuffer.getChannelData(0); // mono channel
+        // Convert Float32 to 16-bit PCM
+        const buffer = new ArrayBuffer(inputData.length * 2);
+        const view = new DataView(buffer);
+        for (let i = 0; i < inputData.length; i++) {
+          let s = Math.max(-1, Math.min(1, inputData[i]));
+          view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+        }
+        if (streamWS && streamWS.readyState === WebSocket.OPEN) {
+          streamWS.send(buffer);
+        }
+      };
+
+      streaming = true;
       setMicState(true);
-      const pending = addMsg('user', '…');
-      pendingUserBubble = pending?.bubble || null;
-    })
-    .catch(err => {
-      if (llmStatus) llmStatus.textContent = 'Microphone error: ' + err.message;
-    });
-}
+      if (llmStatus) llmStatus.textContent = 'Streaming…';
+      console.log('[stream] started');
 
-
-  function handleMicStop(stream, mime) {
-    stream.getTracks().forEach(t => t.stop());
-    setMicState(false);
-    if (llmStatus) llmStatus.textContent = 'Processing…';
-
-    const blob = new Blob(micChunks, { type: mime });
-    const fd = new FormData();
-    fd.append('file', blob, mime.includes('webm') ? 'input.webm' : 'input.ogg');
-
-    fetch(`/agent/chat/${sessionId}`, { method: 'POST', body: fd })
-      .then(r => r.json().then(data => ({ ok: r.ok, data })))
-      .then(({ ok, data }) => {
-        if (!ok) throw new Error(data.detail || 'Request failed');
-
-        // Replace pending user bubble with actual transcript
-        if (pendingUserBubble) {
-          pendingUserBubble.textContent = (data.transcribed_text && String(data.transcribed_text).trim()) || '[Unrecognized]';
-          pendingUserBubble = null;
-        } else {
-          addMsg('user', data.transcribed_text || '[Unrecognized]');
-        }
-
-        // Agent message with play button
-  addMsg('agent', data.llm_response || '[No response]', { audioUrl: data.audio_url });
-  playAgentAudio(data.audio_url);
-
+      // Cleanup on stop
+      streamWS.onclose = () => {
+        processor.disconnect();
+        source.disconnect();
+        audioCtx.close();
+        streamMedia.getTracks().forEach(t => t.stop());
+        streaming = false;
+        setMicState(false);
         if (llmStatus) llmStatus.textContent = '';
-      })
-      .catch(err => {
-        if (pendingUserBubble) {
-          pendingUserBubble.textContent = '[Unrecognized]';
-          pendingUserBubble = null;
-        }
-        if (llmStatus) llmStatus.textContent = 'Error: ' + err.message;
-      });
+        console.log('[stream] ws closed and audio stopped');
+      };
+    } catch (err) {
+      console.error('[stream] start failed', err);
+      if (llmStatus) llmStatus.textContent = 'Mic error: ' + err.message;
+      try { streamWS && streamWS.close(); } catch(_){}
+      try { streamMedia && streamMedia.getTracks().forEach(t=>t.stop()); } catch(_){}
+    }
   }
 
   // Wire up events
   ttsSubmit?.addEventListener('click', handleTtsGenerate);
   echoToggle?.addEventListener('click', toggleEcho);
   micToggle?.addEventListener('click', toggleMic);
+
+
 });

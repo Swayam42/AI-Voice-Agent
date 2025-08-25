@@ -64,12 +64,49 @@ class GeminiClient:
                 time.sleep(0.4 * attempt)
         return "Sorry, I couldn't process that right now. Please try rephrasing."
 
+    def stream_generate(self, prompt: str, on_chunk=None) -> str:
+        """Stream a Gemini response, printing chunks as they arrive.
+        Returns the full accumulated text.
+        """
+        global API_KEY, _configured
+        if not _configured:
+            API_KEY = API_KEY or os.getenv("GEMINI_API_KEY")
+            if API_KEY:
+                try:
+                    genai.configure(api_key=API_KEY)
+                    _configured = True
+                except Exception as e:
+                    logger.error("Stream config failed: %s", e)
+            if not _configured:
+                logger.error("Gemini not configured; skipping stream.")
+                return ""
+        full_parts: list[str] = []
+        try:
+            stream = self._model.generate_content(prompt, stream=True)
+            for chunk in stream:
+                try:
+                    part = (getattr(chunk, 'text', '') or '').strip()
+                except Exception:
+                    part = ''
+                if part:
+                    full_parts.append(part)
+                    print(part, end='', flush=True)
+                    if on_chunk:
+                        try:
+                            on_chunk(part)
+                        except Exception:
+                            pass
+            print()  # newline after stream
+        except Exception as e:
+            logger.error("Streaming Gemini error: %s", e)
+        return ''.join(full_parts).strip()
+
 
 def build_chat_prompt(history: list) -> str:
     lines = [
         "You are a helpful, friendly AI assistant who speaks naturally like an Indian English speaker.",
-        "Reply in a polite, clear, and engaging manner, providing enough context but not too long.",
-        "Use simple examples if needed, keep answers conversational and informative.",
+        "Reply in a polite, clear, and engaging manner",
+        "keep answers conversational and informative.",
     ]
     lines.extend([f"{('User' if msg['role'] == 'user' else 'Assistant')}: {msg['content']}" for msg in history[-10:]])
     lines.append("Assistant:")

@@ -92,6 +92,8 @@ input[type="text"]{ width:100%; padding:10px 12px; border-radius:10px; backgroun
 .bubble{ max-width: 78%; padding:10px 12px; border-radius: 14px; font-size: 14px; line-height: 1.35; }
 .user .bubble{ background: linear-gradient(180deg, #2b6cb0, #1e4a80); color: #fff; border: 1px solid rgba(255,255,255,0.12); }
 .agent .bubble{ background: #0f1623; color: var(--text); border: 1px solid rgba(255,255,255,0.10); }
+.agent .bubble.partial, .user .bubble.partial{ opacity: 0.6; font-style: italic; }
+.agent .bubble.final, .user .bubble.final{ opacity: 1; font-style: normal; border-color: var(--accent); }
 
 .play-btn{
   width: 36px; height: 36px; border-radius: 10px; border:1px solid rgba(255,255,255,0.12);
