@@ -8,7 +8,7 @@
 [![Gemini LLM](https://img.shields.io/badge/LLM-Gemini-4285F4)](https://ai.google.dev/)
 [![Murf AI](https://img.shields.io/badge/TTS-Murf.ai-FF8800)](https://murf.ai/)
 
-Natural, voice‑first conversational AI: Speak → Transcribe (AssemblyAI) → Reason (Gemini) → Respond with realistic speech (Murf)
+Natural, voice‑first conversational AI inspired by Acharya Chanakya: Speak → Transcribe (AssemblyAI) → Reason (Gemini, Chanakya persona) → Respond with realistic speech (Murf)
 
 </div>
 
