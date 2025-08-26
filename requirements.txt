@@ -6,3 +6,4 @@ jinja2==3.1.4
 assemblyai
 google-generativeai
 websocket-client
+tavily-python

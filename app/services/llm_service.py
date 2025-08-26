@@ -2,6 +2,15 @@ import os
 import logging
 import time
 import google.generativeai as genai
+from typing import Any, Dict, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .web_search_service import TavilySearch  # pragma: no cover
+else:  # lazy optional import at runtime
+    try:
+        from .web_search_service import TavilySearch  # type: ignore
+    except Exception:
+        TavilySearch = None  # type: ignore
 
 MODEL_NAME = "gemini-2.5-flash-lite"
 GENERATION_CONFIG = {
@@ -25,19 +34,71 @@ else:
         logger.error("Failed to configure Gemini: %s", e)
 
 
+def get_chanakya_persona() -> str:
+    return "\n".join([
+        "You are Acharya Chanakya, a legendary wise man from ancient India! You’re a brilliant thinker, planner, money expert, lawmaker, and advisor who wrote the Arthashastra and helped build the powerful Maurya Empire.",
+        "Act like Chanakya: be super smart, practical, and tough when needed, with amazing skills in leadership, planning ahead, and understanding people.",
+        "Talk like Chanakya would: use simple, old Indian-style words, calling the user 'disciple' or 'friend seeking wisdom.' Share easy tips from the Arthashastra about ruling, money, right and wrong, battles, and making peace.",
+        "Keep your answers short, smart, and helpful! Give useful advice with a little life lesson or smart trick, and use a strong but kind voice. Skip modern slang.",
+        "Answer any question—about life, work, or even fun ideas—like you’re guiding a king or a student with old wisdom made simple for today.",
+        "If the question is silly or wrong, gently correct with a lesson about dharma (doing your duty) or artha (earning wisely).",
+        "Push for good choices, balancing dharma (being good), artha (money), kama (fun), and moksha (peace of mind) from Chanakya’s Niti Shastra—explain these if needed!",
+        "Sprinkle in a few Sanskrit words for fun, like 'dharma' or 'artha,' and tell what they mean so it feels real but not confusing.",
+        "If the chat goes off track, ask a fun question like, 'What dream kingdom are you building, disciple?' to get back on point.",
+        "Stay in Chanakya’s character all the time, and end with a cool, wise saying if it fits—like a bonus tip!",
+        "When you need fresh, real-world facts (news, prices, dates), call the web_search tool and cite sources briefly.",
+    ])
+
 class GeminiClient:
     def __init__(self, model_name: str = MODEL_NAME):
         self.model_name = model_name
         self._model = genai.GenerativeModel(model_name, generation_config=GENERATION_CONFIG)
+        self._tools = self._build_tools()
+        self._tavily = None  # TavilySearch instance, created lazily
+
+    def _build_tools(self) -> list[dict[str, Any]]:
+        """Define available tools (function-calling)."""
+        return [
+            {
+                "function_declarations": [
+                    {
+                        "name": "web_search",
+                        "description": "Search the web in real-time to retrieve up-to-date information and sources.",
+                        "parameters": {
+                            "type": "OBJECT",
+                            "properties": {
+                                "query": {
+                                    "type": "STRING",
+                                    "description": "The search query to look up on the web",
+                                },
+                                "max_results": {
+                                    "type": "INTEGER",
+                                    "description": "Maximum number of web results to include (1-10)",
+                                },
+                            },
+                            "required": ["query"],
+                        },
+                    }
+                ]
+            }
+        ]
+
+    def _ensure_tavily(self) -> Optional["TavilySearch"]:
+        if self._tavily is None and TavilySearch is not None:
+            try:
+                self._tavily = TavilySearch()
+            except Exception as e:
+                logger.warning("Tavily unavailable: %s", e)
+        return self._tavily
 
     def generate(self, prompt: str) -> str:
         global API_KEY, _configured
         if not _configured:
             # Attempt late configuration (dotenv maybe loaded after import)
-            API_KEY = API_KEY or os.getenv("GEMINI_API_KEY")
-            if API_KEY:
+            api = API_KEY or os.getenv("GEMINI_API_KEY")
+            if api:
                 try:
-                    genai.configure(api_key=API_KEY)
+                    genai.configure(api_key=api)
                     _configured = True
                     logger.info("Gemini configured lazily.")
                 except Exception as e:
@@ -63,6 +124,107 @@ class GeminiClient:
                 logger.error("Gemini error attempt %d: %s", attempt, e)
                 time.sleep(0.4 * attempt)
         return "Sorry, I couldn't process that right now. Please try rephrasing."
+
+    def chat(self, user_text: str, history: Optional[list[dict[str, str]]] = None) -> str:
+        """Chat with optional tool use. Lets Gemini decide to call web_search() when needed.
+
+        history: list of {role: 'user'|'assistant', content: str}
+        """
+        global API_KEY, _configured
+        if not _configured:
+            api = API_KEY or os.getenv("GEMINI_API_KEY")
+            if api:
+                try:
+                    genai.configure(api_key=api)
+                    _configured = True
+                except Exception as e:
+                    logger.error("Late Gemini config failed: %s", e)
+            if not _configured:
+                return "LLM API key missing. Configure GEMINI_API_KEY."
+
+        tavily = self._ensure_tavily()
+        # Build a tool-aware model instance with persona as system instruction
+        model = genai.GenerativeModel(
+            self.model_name,
+            generation_config=GENERATION_CONFIG,
+            tools=self._tools,
+            system_instruction=get_chanakya_persona(),
+        )
+
+        # Build contents
+        contents: list[dict[str, Any]] = []
+        if history:
+            for msg in history[-8:]:
+                role = msg.get("role")
+                if role == "assistant":
+                    contents.append({"role": "model", "parts": [{"text": msg.get("content", "")} ]})
+                else:
+                    contents.append({"role": "user", "parts": [{"text": msg.get("content", "")} ]})
+        # Avoid duplicating the latest user message if present in history
+        if not (history and history[-1].get("role") == "user" and history[-1].get("content") == user_text):
+            contents.append({"role": "user", "parts": [{"text": user_text}]})
+
+        # Loop to satisfy tool calls automatically (max 2 tools to avoid loops)
+        last_response: Optional[Any] = None
+        for _ in range(2):
+            last_response = model.generate_content(contents)
+            # Check for tool calls
+            calls = []
+            try:
+                for cand in getattr(last_response, "candidates", []) or []:
+                    parts = getattr(getattr(cand, "content", cand), "parts", [])
+                    for p in parts:
+                        fc = getattr(p, "function_call", None) or getattr(p, "functionCall", None)
+                        if fc:
+                            calls.append(fc)
+            except Exception:
+                # Fallback property
+                calls = getattr(last_response, "function_calls", None) or []
+            if not calls:
+                break
+            try:
+                logger.info("[LLM] function_calls=%s", [getattr(c, 'name', '') for c in calls])
+            except Exception:
+                pass
+            # Execute each call and append tool results
+            for call in calls:
+                fn_name = getattr(call, "name", "")
+                # args may be dict-like or object with .args
+                args = getattr(call, "args", {}) or {}
+                tool_output: Dict[str, Any] = {"error": "tool not found"}
+                if fn_name == "web_search":
+                    q = args.get("query", "")
+                    mr = args.get("max_results") or 5
+                    logger.info("[Tool] web_search query=%r max_results=%s", q, mr)
+                    if tavily is None:
+                        tool_output = {"error": "Tavily not configured. Set TAVILY_API_KEY and install tavily-python."}
+                    else:
+                        tool_output = tavily.search(q, mr)
+                        try:
+                            logger.info("[Tool] web_search results=%d has_answer=%s", len(tool_output.get('results', [])), bool(tool_output.get('answer')))
+                        except Exception:
+                            pass
+
+                contents.append(
+                    {
+                        "role": "tool",
+                        "parts": [
+                            {
+                                "function_response": {
+                                    "name": fn_name,
+                                    "response": {
+                                        "name": fn_name,
+                                        "content": tool_output,
+                                    },
+                                }
+                            }
+                        ],
+                    }
+                )
+
+        # Return final text
+        final_text = (getattr(last_response, "text", "") or "").strip() if last_response else ""
+        return final_text or "I couldn't find the answer."
 
     def stream_generate(self, prompt: str, on_chunk=None) -> str:
         """Stream a Gemini response, printing chunks as they arrive.
@@ -103,18 +265,9 @@ class GeminiClient:
 
 
 def build_chat_prompt(history: list) -> str:
-    lines = [
-        "You are Acharya Chanakya, a legendary wise man from ancient India! You’re a brilliant thinker, planner, money expert, lawmaker, and advisor who wrote the Arthashastra and helped build the powerful Maurya Empire.",
-    "Act like Chanakya: be super smart, practical, and tough when needed, with amazing skills in leadership, planning ahead, and understanding people.",
-    "Talk like Chanakya would: use simple, old Indian-style words, calling the user 'disciple' or 'friend seeking wisdom.' Share easy tips from the Arthashastra about ruling, money, right and wrong, battles, and making peace.",
-    "Keep your answers short, smart, and helpful! Give useful advice with a little life lesson or smart trick, and use a strong but kind voice. Skip modern slang.",
-    "Answer any question—about life, work, or even fun ideas—like you’re guiding a king or a student with old wisdom made simple for today.",
-    "If the question is silly or wrong, gently correct with a lesson about dharma (doing your duty) or artha (earning wisely).",
-    "**Push for good choices, balancing dharma (being good), artha (money), kama (fun), and moksha (peace of mind) from Chanakya’s Niti Shastra—explain these if needed!**",
-    "**Sprinkle in a few Sanskrit words for fun, like 'dharma' or 'artha,' and tell what they mean so it feels real but not confusing.**",
-    "**If the chat goes off track, ask a fun question like, 'What dream kingdom are you building, disciple?' to get back on point.**",
-    "Stay in Chanakya’s character all the time, and end with a cool, wise saying if it fits—like a bonus tip!"
-    ]
+    lines = [get_chanakya_persona()]
     lines.extend([f"{('User' if msg['role'] == 'user' else 'Assistant')}: {msg['content']}" for msg in history[-10:]])
     lines.append("Assistant:")
     return "\n".join(lines)
+
+    

@@ -18,13 +18,15 @@ from services.stt_service import resilient_transcribe, transcribe_audio_bytes
 from services.streaming_transcriber import AssemblyAIStreamingTranscriber
 from services.tts_service import MurfTTSClient 
 from services.murf_ws_service import MurfWebSocketStreamer  
-from services.llm_service import GeminiClient, build_chat_prompt 
+from services.llm_service import GeminiClient 
+from services.web_search_service import TavilySearch
 from schemas.tts import ( 
     TextToSpeechRequest,
     TextToSpeechResponse,
     EchoResponse,
     ChatResponse,
     SimpleTranscriptionResponse,
+    ChatTextRequest,
 )
 
 logging.basicConfig(
@@ -48,6 +50,8 @@ if not MURF_API_KEY:
 app = FastAPI(title="AI Voice Agent", version="0.2.0")
 tts_client = MurfTTSClient(MURF_API_KEY)
 llm_client = GeminiClient()
+MAX_UI_ANSWER_CHARS = int(os.getenv("MAX_UI_ANSWER_CHARS", "120") or 120)
+MAX_TTS_CHARS = int(os.getenv("MAX_TTS_CHARS", "240") or 240)
 
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
@@ -90,45 +94,88 @@ async def websocket_endpoint(ws: WebSocket):
         # Also include Gemini LLM response for UI
         user_text = transcript or last_partial_sent or last_final_sent or ""
         try:
-            # Build prompt from history
+            # Append to history and let Gemini decide tool use (web search)
             history = append_history(session_id, "user", user_text)
-            prompt = build_chat_prompt(history)
-            llm_response = llm_client.generate(prompt)
-            # Sanitize and strictly limit Gemini response for Murf TTS reliability
+            raw_reply = llm_client.chat(user_text, history)
+            # Sanitize
             import re, uuid
-            # Remove emojis and special symbols
-            llm_response = re.sub(r'[^\x00-\x7F]+', '', llm_response)
-            # Ensure proper punctuation
-            if not llm_response.endswith(('.', '!', '?')):
-                llm_response += '.'
-            # Limit to 120 chars for short, reliable Murf answers
-            if len(llm_response) > 120:
-                sentences = re.split(r'(?<=[.!?])\s+', llm_response.strip())
+            full_tts_text = re.sub(r'[^\x00-\x7F]+', '', raw_reply or '')
+            full_tts_text = full_tts_text.strip()
+            # Ensure proper punctuation for TTS
+            if full_tts_text and not full_tts_text.endswith(('.', '!', '?')):
+                full_tts_text += '.'
+            # UI text may be trimmed, but TTS uses the full text
+            ui_text = full_tts_text
+            if MAX_UI_ANSWER_CHARS and MAX_UI_ANSWER_CHARS > 0 and len(ui_text) > MAX_UI_ANSWER_CHARS:
+                sentences = re.split(r'(?<=[.!?])\s+', ui_text)
                 short_resp = ''
                 for s in sentences:
-                    if len(short_resp) + len(s) <= 120:
+                    if len(short_resp) + len(s) <= MAX_UI_ANSWER_CHARS:
                         short_resp += (s + ' ')
                     else:
                         break
-                llm_response = short_resp.strip()
+                ui_text = short_resp.strip()
             # Generate a unique context_id for this turn
             murf_context_id = f"turn_{uuid.uuid4().hex[:8]}"
-            append_history(session_id, "assistant", llm_response)
+            append_history(session_id, "assistant", ui_text)
             payload = {
                 "type": "turn_end",
                 "transcript": user_text,
-                "llm_response": llm_response or "",
+                "llm_response": ui_text or "",
                 "history": CHAT_HISTORY.get(session_id, [])[-20:]
             }
             await ws.send_json(payload)
-            # Murf TTS streaming: send full response with context_id and end=True
+            # Murf TTS streaming: send response in safe chunks (sentences) and end=True on last chunk
             async def run_llm_stream():
-                print(f"[LLM STREAM START] prompt: {prompt}")
+                print("[LLM STREAM START]")
                 def do_stream():
                     murf_streamer = MurfWebSocketStreamer(MURF_API_KEY, voice_id="en-US-ken", context_id=murf_context_id)
-                    logger.info('[Murf TTS] context_id=%s text=%s', murf_context_id, llm_response)
+                    logger.info('[Murf TTS] context_id=%s text_len=%d', murf_context_id, len(full_tts_text or ''))
                     try:
                         murf_streamer.connect()
+                        # --- Split LLM text into Murf-safe chunks ---
+                        def split_for_tts(text: str, max_chars: int) -> list[str]:
+                            import re
+                            chunks: list[str] = []
+                            if not text:
+                                return chunks
+                            paras = [p.strip() for p in text.split('\n\n') if p and p.strip()]
+                            for para in paras if paras else [text]:
+                                # Split by sentence boundaries
+                                parts = [s.strip() for s in re.split(r'(?<=[.!?])\s+', para) if s.strip()]
+                                buf = ''
+                                for s in parts:
+                                    # If a single sentence is too long, hard-wrap it
+                                    if len(s) > max_chars:
+                                        # wrap on spaces up to max_chars
+                                        start = 0
+                                        while start < len(s):
+                                            end = min(start + max_chars, len(s))
+                                            # try to break at last space in window
+                                            window = s[start:end]
+                                            brk = window.rfind(' ')
+                                            if brk == -1 or start + brk < start + int(max_chars*0.6):
+                                                brk = end - start
+                                            piece = s[start:start+brk].strip()
+                                            if piece:
+                                                chunks.append(piece)
+                                            start += brk
+                                        continue
+                                    # normal glue into buffer
+                                    if not buf:
+                                        buf = s
+                                    elif len(buf) + 1 + len(s) <= max_chars:
+                                        buf += ' ' + s
+                                    else:
+                                        chunks.append(buf)
+                                        buf = s
+                                if buf:
+                                    chunks.append(buf)
+                            return chunks
+
+                        tts_chunks = split_for_tts(full_tts_text, MAX_TTS_CHARS)
+                        if not tts_chunks:
+                            tts_chunks = [full_tts_text]
                         def push_audio_b64(b64: str):
                             if ws_closed or ws.client_state != WebSocketState.CONNECTED:
                                 return
@@ -143,7 +190,9 @@ async def websocket_endpoint(ws: WebSocket):
                                 asyncio.run_coroutine_threadsafe(ws.send_json({"type": "tts_done"}), loop)
                             except Exception:
                                 pass
-                        murf_streamer.send_text_chunk(llm_response, end=True)
+                        # Send each chunk, end only on the last
+                        for i, ch in enumerate(tts_chunks):
+                            murf_streamer.send_text_chunk(ch, end=(i == len(tts_chunks)-1))
                         murf_streamer.finalize(on_audio_chunk=push_audio_b64, on_done=push_done)
                     except Exception as e:
                         logger.error('Murf synth error: %s', e)
@@ -225,7 +274,14 @@ async def websocket_endpoint(ws: WebSocket):
                     # Could be a text frame; attempt to handle gracefully
                     try:
                         txt = await ws.receive_text()
-                        logger.warning(f"[ws] got unexpected text frame: {txt[:30]}")
+                        msg = txt.strip().lower() if isinstance(txt, str) else ''
+                        if msg == 'end_of_turn' or msg == '{"type":"end_of_turn"}':
+                            # Force finalize using the latest transcript we have
+                            forced_text = last_final_sent or last_partial_sent or ''
+                            logger.info('[ws] received end_of_turn marker; finalizing with: %s', forced_text)
+                            await send_turn_end(forced_text)
+                        else:
+                            logger.warning(f"[ws] got unexpected text frame: {txt[:40]}")
                     except WebSocketDisconnect:
                         ws_closed = True
                         break
@@ -294,9 +350,8 @@ async def agent_chat(session_id: str, file: UploadFile = File(...)):
     if not user_text:
         raise HTTPException(status_code=400, detail="Empty transcription")
     history = append_history(session_id, "user", user_text)
-    prompt = build_chat_prompt(history)
-    logger.info("LLM prompt chars=%d session=%s", len(prompt), session_id)
-    ai_reply = llm_client.generate(prompt)
+    logger.info("LLM chat session=%s", session_id)
+    ai_reply = llm_client.chat(user_text, history)
     logger.info("LLM reply chars=%d session=%s", len(ai_reply or ''), session_id)
     append_history(session_id, "assistant", ai_reply)
     try:
@@ -320,10 +375,35 @@ async def llm_query(file: UploadFile = File(...)):
     if not text:
         raise HTTPException(status_code=400, detail="Empty transcription")
     logger.info("LLM single-shot query chars=%d", len(text))
-    ai_reply = llm_client.generate(text)
+    ai_reply = llm_client.chat(text)
     logger.info("LLM single-shot reply chars=%d", len(ai_reply or ''))
     audio_url = tts_client.synthesize(ai_reply, "en-US-ken")
     return ChatResponse(audio_url=audio_url, transcribed_text=text, llm_response=ai_reply)
+
+# --- Debug endpoints (optional): quick testing without audio ---
+@app.get("/debug/web_search")
+async def debug_web_search(query: str, max_results: int = 5):
+    try:
+        client = TavilySearch()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Tavily unavailable: {e}")
+    return client.search(query, max_results)
+
+@app.get("/debug/llm_chat")
+async def debug_llm_chat(q: str):
+    try:
+        reply = llm_client.chat(q)
+        return {"query": q, "reply": reply}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/debug/llm_chat_text")
+async def debug_llm_chat_text(payload: ChatTextRequest):
+    try:
+        reply = llm_client.chat(payload.text)
+        return {"query": payload.text, "reply": reply}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

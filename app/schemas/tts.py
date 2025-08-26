@@ -20,3 +20,6 @@ class ChatResponse(BaseModel):
 
 class SimpleTranscriptionResponse(BaseModel):
     transcription: str
+
+class ChatTextRequest(BaseModel):
+    text: str
