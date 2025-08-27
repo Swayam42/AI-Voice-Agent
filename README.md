@@ -54,6 +54,7 @@ app/
 │   ├── stt_service.py     # AssemblyAI transcription helpers
 │   ├── tts_service.py     # Murf.ai TTS client wrapper
 │   ├── llm_service.py     # Gemini client + prompt builder + function calling
+│   ├── weather_service.py
 │   ├── murf_ws_service.py # Murf WebSocket streaming (chunked TTS)
 │   ├── web_search_service.py # Tavily search wrapper
 │   └── streaming_transcriber.py # AssemblyAI streaming transcription
@@ -87,6 +88,7 @@ ASSEMBLYAI_API_KEY=your_assemblyai_key
 GEMINI_API_KEY=your_gemini_key
 MURF_API_KEY=your_murf_key
 TAVILY_API_KEY=your_tavily_key
+OPENWEATHER_API_KEY=your_openweather_key
 
 # Optional UI/voice tuning
 MAX_UI_ANSWER_CHARS=120   # 0 to disable trimming
@@ -99,6 +101,8 @@ MAX_TTS_CHARS=240         # per TTS chunk for Murf WS
 - Gemini (Google AI Studio): https://aistudio.google.com/app/apikey
 - Murf AI: https://murf.ai/api (Account settings → API key)
 - Tavily: https://app.tavily.com/ (Dashboard → API Keys)
+- Tavily: https://app.tavily.com/ (Dashboard → API Keys)
+- OpenWeather: https://home.openweathermap.org/api_keys
 
 Tip: copy `.env.example` to `.env` and fill your values. Never commit `.env`.
 
