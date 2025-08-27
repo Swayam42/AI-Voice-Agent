@@ -6,11 +6,16 @@ from typing import Any, Dict, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .web_search_service import TavilySearch  # pragma: no cover
+    from .weather_service import OpenWeather  # pragma: no cover
 else:  # lazy optional import at runtime
     try:
         from .web_search_service import TavilySearch  # type: ignore
     except Exception:
         TavilySearch = None  # type: ignore
+    try:
+        from .weather_service import OpenWeather  # type: ignore
+    except Exception:
+        OpenWeather = None  # type: ignore
 
 MODEL_NAME = "gemini-2.5-flash-lite"
 GENERATION_CONFIG = {
@@ -47,6 +52,7 @@ def get_chanakya_persona() -> str:
         "If the chat goes off track, ask a fun question like, 'What dream kingdom are you building, disciple?' to get back on point.",
         "Stay in Chanakya’s character all the time, and end with a cool, wise saying if it fits—like a bonus tip!",
         "When you need fresh, real-world facts (news, prices, dates), call the web_search tool and cite sources briefly.",
+        "For weather questions, call the get_weather tool to fetch accurate current conditions before answering.",
     ])
 
 class GeminiClient:
@@ -55,6 +61,7 @@ class GeminiClient:
         self._model = genai.GenerativeModel(model_name, generation_config=GENERATION_CONFIG)
         self._tools = self._build_tools()
         self._tavily = None  # TavilySearch instance, created lazily
+        self._weather = None  # OpenWeather instance, created lazily
 
     def _build_tools(self) -> list[dict[str, Any]]:
         """Define available tools (function-calling)."""
@@ -78,7 +85,25 @@ class GeminiClient:
                             },
                             "required": ["query"],
                         },
-                    }
+                    },
+                    {
+                        "name": "get_weather",
+                        "description": "Get current weather for a location using OpenWeather.",
+                        "parameters": {
+                            "type": "OBJECT",
+                            "properties": {
+                                "location": {
+                                    "type": "STRING",
+                                    "description": "City or 'city,countryCode' (e.g., 'Delhi' or 'London,UK')",
+                                },
+                                "units": {
+                                    "type": "STRING",
+                                    "description": "Units for temperature: 'metric' or 'imperial'",
+                                },
+                            },
+                            "required": ["location"],
+                        },
+                    },
                 ]
             }
         ]
@@ -90,6 +115,14 @@ class GeminiClient:
             except Exception as e:
                 logger.warning("Tavily unavailable: %s", e)
         return self._tavily
+
+    def _ensure_weather(self) -> Optional["OpenWeather"]:
+        if self._weather is None and OpenWeather is not None:
+            try:
+                self._weather = OpenWeather()
+            except Exception as e:
+                logger.warning("OpenWeather unavailable: %s", e)
+        return self._weather
 
     def generate(self, prompt: str) -> str:
         global API_KEY, _configured
@@ -143,6 +176,7 @@ class GeminiClient:
                 return "LLM API key missing. Configure GEMINI_API_KEY."
 
         tavily = self._ensure_tavily()
+        weather = self._ensure_weather()
         # Build a tool-aware model instance with persona as system instruction
         model = genai.GenerativeModel(
             self.model_name,
@@ -204,6 +238,14 @@ class GeminiClient:
                             logger.info("[Tool] web_search results=%d has_answer=%s", len(tool_output.get('results', [])), bool(tool_output.get('answer')))
                         except Exception:
                             pass
+                elif fn_name == "get_weather":
+                    loc = args.get("location", "")
+                    units = (args.get("units") or "metric").lower()
+                    logger.info("[Tool] get_weather location=%r units=%s", loc, units)
+                    if weather is None:
+                        tool_output = {"error": "OpenWeather not configured. Set OPENWEATHER_API_KEY."}
+                    else:
+                        tool_output = weather.current_weather(loc, units)
 
                 contents.append(
                     {

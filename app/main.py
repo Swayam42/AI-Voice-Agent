@@ -20,6 +20,7 @@ from services.tts_service import MurfTTSClient
 from services.murf_ws_service import MurfWebSocketStreamer  
 from services.llm_service import GeminiClient 
 from services.web_search_service import TavilySearch
+from services.weather_service import OpenWeather
 from schemas.tts import ( 
     TextToSpeechRequest,
     TextToSpeechResponse,
@@ -388,6 +389,14 @@ async def debug_web_search(query: str, max_results: int = 5):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Tavily unavailable: {e}")
     return client.search(query, max_results)
+
+@app.get("/debug/weather")
+async def debug_weather(location: str, units: str = "metric"):
+    try:
+        client = OpenWeather()
+        return client.current_weather(location, units)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"OpenWeather unavailable: {e}")
 
 @app.get("/debug/llm_chat")
 async def debug_llm_chat(q: str):
