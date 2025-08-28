@@ -580,4 +580,21 @@ function playAgentAudio(url, force = false) {
   micToggle?.addEventListener('click', toggleMic);
 
 
+  // Keyboard shortcut: 'm' toggles mic on/off (unless typing or modal open)
+  document.addEventListener('keydown', (e) => {
+    try {
+      if (e.defaultPrevented) return;
+      if (e.altKey || e.ctrlKey || e.metaKey) return;
+      const k = (e.key || '').toLowerCase();
+      if (k !== 'm') return;
+      const target = e.target;
+      const tag = target && target.tagName ? target.tagName.toLowerCase() : '';
+      if (tag === 'input' || tag === 'textarea' || (target && target.isContentEditable)) return;
+      if (settingsModal && settingsModal.classList.contains('open')) return;
+      e.preventDefault();
+      toggleMic();
+    } catch (_) {}
+  });
+
+
 });
