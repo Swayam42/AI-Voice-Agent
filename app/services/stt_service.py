@@ -6,7 +6,10 @@ from fastapi import HTTPException
 
 TRANSCRIBE_TIMEOUT = 30
 
-def transcribe_audio_bytes(audio_bytes: bytes) -> str:
+def transcribe_audio_bytes(audio_bytes: bytes, api_key: str | None = None) -> str:
+    prev = getattr(aai.settings, 'api_key', None)
+    if api_key:
+        aai.settings.api_key = api_key
     config = aai.TranscriptionConfig(speech_model=aai.SpeechModel.best)
     transcriber = aai.Transcriber(config=config)
     transcript = transcriber.transcribe(audio_bytes)
@@ -18,18 +21,24 @@ def transcribe_audio_bytes(audio_bytes: bytes) -> str:
         time.sleep(1)
     if transcript.status == aai.TranscriptStatus.error:
         raise HTTPException(status_code=500, detail="Transcription failed")
-    return transcript.text.strip() if transcript.text else ""
+    result = transcript.text.strip() if transcript.text else ""
+    if api_key is not None:
+        aai.settings.api_key = prev
+    return result
 
 
-def resilient_transcribe(audio_bytes: bytes) -> str:
+def resilient_transcribe(audio_bytes: bytes, api_key: str | None = None) -> str:
     try:
-        return transcribe_audio_bytes(audio_bytes)
+        return transcribe_audio_bytes(audio_bytes, api_key=api_key)
     except Exception:
         # fallback to temp file path
         with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp:
             tmp.write(audio_bytes)
             tmp_path = tmp.name
         try:
+            prev = getattr(aai.settings, 'api_key', None)
+            if api_key:
+                aai.settings.api_key = api_key
             config = aai.TranscriptionConfig(speech_model=aai.SpeechModel.best)
             transcriber = aai.Transcriber(config=config)
             transcript = transcriber.transcribe(tmp_path)
@@ -41,7 +50,10 @@ def resilient_transcribe(audio_bytes: bytes) -> str:
                 time.sleep(1)
             if transcript.status == aai.TranscriptStatus.error:
                 raise HTTPException(status_code=500, detail="Transcription failed")
-            return transcript.text.strip() if transcript.text else ""
+            text = transcript.text.strip() if transcript.text else ""
+            return text
         finally:
+            if api_key is not None:
+                aai.settings.api_key = prev
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)

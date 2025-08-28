@@ -38,26 +38,29 @@ logger = logging.getLogger("voice-agent")
 
 aai.settings.api_key = os.getenv("ASSEMBLYAI_API_KEY")
 if not aai.settings.api_key:
-    raise ValueError("ASSEMBLYAI_API_KEY not found in .env file")
+    logger.warning("ASSEMBLYAI_API_KEY not set; expect user to provide via Settings UI per session.")
 
 gemini_key = os.getenv("GEMINI_API_KEY")
 if not gemini_key:
-    raise ValueError("GEMINI_API_KEY not found in .env file")
+    logger.warning("GEMINI_API_KEY not set; can be provided per session via Settings UI.")
 
 MURF_API_KEY = os.getenv("MURF_API_KEY")
 if not MURF_API_KEY:
-    raise ValueError("MURF_API_KEY not found in .env file")
+    logger.warning("MURF_API_KEY not set; TTS will require a per-session key via Settings UI.")
 
 app = FastAPI(title="AI Voice Agent", version="0.2.0")
-tts_client = MurfTTSClient(MURF_API_KEY)
+# Default TTS client only if env key exists; per-session override supported at call-time
+tts_client = MurfTTSClient(MURF_API_KEY) if MURF_API_KEY else None
 llm_client = GeminiClient()
-MAX_UI_ANSWER_CHARS = int(os.getenv("MAX_UI_ANSWER_CHARS", "120") or 120)
-MAX_TTS_CHARS = int(os.getenv("MAX_TTS_CHARS", "240") or 240)
+# Local knobs (not from env): tweak UI and TTS chunk lengths here
+MAX_UI_ANSWER_CHARS: int =0  # 0 to disable UI trimming
+MAX_TTS_CHARS: int = 240         # per-chunk size for Murf streaming
 
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
 
 CHAT_HISTORY: dict[str, list] = {}
+SESSION_SETTINGS: dict[str, dict] = {}
 
 active_connections: set[WebSocket] = set()
 
@@ -79,6 +82,14 @@ async def websocket_endpoint(ws: WebSocket):
     last_final_sent: str | None = None
     turn_finalized: bool = False
 
+    # Look up any session-specific API keys
+    settings = SESSION_SETTINGS.get(session_id) or {}
+    aai_key = settings.get("ASSEMBLYAI_API_KEY") or aai.settings.api_key
+    gemini_override = settings.get("GEMINI_API_KEY")
+    tavily_override = settings.get("TAVILY_API_KEY")
+    ow_override = settings.get("OPENWEATHER_API_KEY")
+    murf_override = settings.get("MURF_API_KEY")
+
     # Send incremental (partial) transcript to client (as plain text frame) for live display
     async def send_transcript(transcript: str):
         if ws_closed or ws.client_state != WebSocketState.CONNECTED:
@@ -97,7 +108,12 @@ async def websocket_endpoint(ws: WebSocket):
         try:
             # Append to history and let Gemini decide tool use (web search)
             history = append_history(session_id, "user", user_text)
-            raw_reply = llm_client.chat(user_text, history)
+            overrides = {k: v for k, v in {
+                "GEMINI_API_KEY": gemini_override,
+                "TAVILY_API_KEY": tavily_override,
+                "OPENWEATHER_API_KEY": ow_override,
+            }.items() if v}
+            raw_reply = llm_client.chat(user_text, history, overrides=overrides)
             # Sanitize
             import re, uuid
             full_tts_text = re.sub(r'[^\x00-\x7F]+', '', raw_reply or '')
@@ -130,7 +146,12 @@ async def websocket_endpoint(ws: WebSocket):
             async def run_llm_stream():
                 print("[LLM STREAM START]")
                 def do_stream():
-                    murf_streamer = MurfWebSocketStreamer(MURF_API_KEY, voice_id="en-US-ken", context_id=murf_context_id)
+                    # Use per-session Murf key if provided
+                    murf_key = murf_override or MURF_API_KEY
+                    if not murf_key:
+                        logger.error('No Murf API key set for TTS streaming')
+                        return
+                    murf_streamer = MurfWebSocketStreamer(murf_key, voice_id="en-US-ken", context_id=murf_context_id)
                     logger.info('[Murf TTS] context_id=%s text_len=%d', murf_context_id, len(full_tts_text or ''))
                     try:
                         murf_streamer.connect()
@@ -255,7 +276,8 @@ async def websocket_endpoint(ws: WebSocket):
     transcriber = AssemblyAIStreamingTranscriber(
         sample_rate=16000,
         partial_callback=transcript_callback,
-        final_callback=turn_callback
+        final_callback=turn_callback,
+        api_key=aai_key
     )
     try:
         with open(file_path, "ab") as audio_file:
@@ -307,6 +329,8 @@ async def home(request: Request):
 @app.post("/generate_audio", response_model=TextToSpeechResponse)
 async def generate_audio(payload: TextToSpeechRequest):
     logger.info("TTS generate request: %s chars", len(payload.text))
+    if not tts_client:
+        raise HTTPException(status_code=500, detail="TTS not configured. Set MURF_API_KEY in server or provide per-session in chat flow.")
     audio_url = tts_client.synthesize(payload.text, payload.voiceId)
     return TextToSpeechResponse(audio_url=audio_url)
 
@@ -331,6 +355,7 @@ async def tts_echo(file: UploadFile = File(...)):
     audio_data = await file.read()
     if not audio_data:
         raise HTTPException(status_code=400, detail="Empty file")
+    # sessionless here; could accept ?session_id to use overrides
     text = resilient_transcribe(audio_data)
     if not text:
         raise HTTPException(status_code=400, detail="Empty transcription")
@@ -347,16 +372,30 @@ async def agent_chat(session_id: str, file: UploadFile = File(...)):
     audio_bytes = await file.read()
     if not audio_bytes or len(audio_bytes) < 100:
         raise HTTPException(status_code=400, detail="Invalid audio file")
-    user_text = transcribe_audio_bytes(audio_bytes)
+    # Use session-specific AssemblyAI key if set
+    s = (SESSION_SETTINGS.get(session_id) or {})
+    aai_key = s.get("ASSEMBLYAI_API_KEY")
+    user_text = transcribe_audio_bytes(audio_bytes, api_key=aai_key)
     if not user_text:
         raise HTTPException(status_code=400, detail="Empty transcription")
     history = append_history(session_id, "user", user_text)
     logger.info("LLM chat session=%s", session_id)
-    ai_reply = llm_client.chat(user_text, history)
+    overrides = {k: v for k, v in {
+        "GEMINI_API_KEY": s.get("GEMINI_API_KEY"),
+        "TAVILY_API_KEY": s.get("TAVILY_API_KEY"),
+        "OPENWEATHER_API_KEY": s.get("OPENWEATHER_API_KEY"),
+    }.items() if v}
+    ai_reply = llm_client.chat(user_text, history, overrides=overrides)
     logger.info("LLM reply chars=%d session=%s", len(ai_reply or ''), session_id)
     append_history(session_id, "assistant", ai_reply)
     try:
-        audio_url = tts_client.synthesize(ai_reply, "en-US-ken")
+        # Use per-session Murf key override if present
+        murf_key = s.get("MURF_API_KEY") or MURF_API_KEY
+        if not murf_key:
+            raise HTTPException(status_code=500, detail="Murf TTS not configured")
+        # Prefer ephemeral client to avoid mutating global
+        local_client = MurfTTSClient(murf_key)
+        audio_url = local_client.synthesize(ai_reply, "en-US-ken")
     except HTTPException as e:
         logger.error("TTS failure: %s", e.detail)
         raise
@@ -413,6 +452,24 @@ async def debug_llm_chat_text(payload: ChatTextRequest):
         return {"query": payload.text, "reply": reply}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# Settings endpoints (kept above __main__ guard to ensure registration even when running this file directly)
+@app.post("/settings/{session_id}")
+async def set_session_settings(session_id: str, payload: dict):
+    # Accept a JSON with any of: GEMINI_API_KEY, TAVILY_API_KEY, OPENWEATHER_API_KEY, ASSEMBLYAI_API_KEY, MURF_API_KEY
+    allowed = {"GEMINI_API_KEY","TAVILY_API_KEY","OPENWEATHER_API_KEY","ASSEMBLYAI_API_KEY","MURF_API_KEY"}
+    existing = SESSION_SETTINGS.setdefault(session_id, {})
+    for k,v in (payload or {}).items():
+        if k in allowed and isinstance(v, str) and v.strip():
+            existing[k] = v.strip()
+        elif k in allowed and (v is None or v == ""):
+            existing.pop(k, None)
+    return {"session_id": session_id, "settings": {k: ("set" if k in existing else None) for k in allowed}}
+
+@app.get("/settings/{session_id}")
+async def get_session_settings(session_id: str):
+    s = SESSION_SETTINGS.get(session_id) or {}
+    return {"session_id": session_id, "settings": {k: ("set" if k in s else None) for k in ["GEMINI_API_KEY","TAVILY_API_KEY","OPENWEATHER_API_KEY","ASSEMBLYAI_API_KEY","MURF_API_KEY"]}}
 
 if __name__ == "__main__":
     import uvicorn

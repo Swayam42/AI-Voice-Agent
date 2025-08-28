@@ -28,6 +28,17 @@ document.addEventListener('DOMContentLoaded', () => {
   const llmStatus = document.getElementById('llmStatus');
   const chatMessages = document.getElementById('chatMessages');
   const agentAudio = document.getElementById('agentAudio');
+  // Settings modal elements
+  const settingsBtn = document.getElementById('settingsBtn');
+  const settingsModal = document.getElementById('settingsModal');
+  const settingsClose = document.getElementById('settingsClose');
+  const settingsReveal = document.getElementById('settingsReveal');
+  const settingsSave = document.getElementById('settingsSave');
+  const keyGemini = document.getElementById('keyGemini');
+  const keyAAI = document.getElementById('keyAAI');
+  const keyMurf = document.getElementById('keyMurf');
+  const keyTavily = document.getElementById('keyTavily');
+  const keyOW = document.getElementById('keyOW');
   // Optional UI sounds (place files in /static/sounds)
   const uiSoundStart = new Audio('/static/sounds/mic_start.mp3');
   const uiSoundStop = new Audio('/static/sounds/mic_stop.mp3');
@@ -200,6 +211,98 @@ function playAgentAudio(url, force = false) {
   }
   const sessionId = ensureSessionId();
 
+  // Key storage helpers: persist per-session (survives hard refresh in this tab, resets when session_id changes)
+  function readSessionKey(name){
+    try { return sessionStorage.getItem(`KEY_${sessionId}_${name}`) || ''; } catch(_) { return ''; }
+  }
+  function writeSessionKey(name, value){
+    try { if (typeof value === 'string') sessionStorage.setItem(`KEY_${sessionId}_${name}`, value); } catch(_) {}
+  }
+
+  // ---- Settings modal wiring ----
+  function openSettings() { settingsModal?.classList.add('open'); settingsModal?.setAttribute('aria-hidden','false'); }
+  function closeSettings() { settingsModal?.classList.remove('open'); settingsModal?.setAttribute('aria-hidden','true'); }
+  settingsBtn?.addEventListener('click', openSettings);
+  settingsClose?.addEventListener('click', closeSettings);
+  // Close on click outside (backdrop or container outside the card)
+  settingsModal?.addEventListener('click', (e)=>{
+    if (!settingsModal) return;
+    const card = settingsModal.querySelector('.modal-card');
+    if (!card) return;
+    if (e.target === settingsModal || e.target === settingsModal.querySelector('.modal-backdrop')) {
+      closeSettings();
+      return;
+    }
+    if (!card.contains(e.target)) closeSettings();
+  });
+
+  // Toggle show/hide for all API inputs
+  let keysVisible = false;
+  const ICON_EYE = `
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M12 5C7 5 2.73 8.11 1 12c1.73 3.89 6 7 11 7s9.27-3.11 11-7c-1.73-3.89-6-7-11-7Zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10Z" fill="currentColor"/>
+    </svg>`;
+  const ICON_EYE_OFF = `
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M12 5C7 5 2.73 8.11 1 12c1.73 3.89 6 7 11 7s9.27-3.11 11-7c-1.73-3.89-6-7-11-7Zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10Z" fill="currentColor"/>
+      <path d="M3 3l18 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    </svg>`;
+  function setKeysVisibility(show) {
+    const type = show ? 'text' : 'password';
+    if (keyGemini) keyGemini.type = type;
+    if (keyAAI) keyAAI.type = type;
+    if (keyMurf) keyMurf.type = type;
+    if (keyTavily) keyTavily.type = type;
+    if (keyOW) keyOW.type = type;
+    keysVisible = !!show;
+    if (settingsReveal) {
+      settingsReveal.innerHTML = show ? ICON_EYE : ICON_EYE_OFF;
+      settingsReveal.setAttribute('aria-label', show ? 'Hide keys' : 'Show keys');
+      settingsReveal.title = show ? 'Hide keys' : 'Show keys';
+    }
+  }
+  settingsReveal?.addEventListener('click', (e)=> { e.stopPropagation(); setKeysVisibility(!keysVisible); });
+  // Default to hidden (password)
+  setKeysVisibility(false);
+
+  // Prefill inputs from sessionStorage per session (never from server for security)
+  try {
+    if (keyGemini) keyGemini.value = readSessionKey('GEMINI');
+    if (keyAAI) keyAAI.value = readSessionKey('AAI');
+    if (keyMurf) keyMurf.value = readSessionKey('MURF');
+    if (keyTavily) keyTavily.value = readSessionKey('TAVILY');
+    if (keyOW) keyOW.value = readSessionKey('OW');
+  } catch(_) {}
+
+  async function saveSettings() {
+    const payload = {
+      GEMINI_API_KEY: (keyGemini && keyGemini.value.trim()) || '',
+      ASSEMBLYAI_API_KEY: (keyAAI && keyAAI.value.trim()) || '',
+      MURF_API_KEY: (keyMurf && keyMurf.value.trim()) || '',
+      TAVILY_API_KEY: (keyTavily && keyTavily.value.trim()) || '',
+      OPENWEATHER_API_KEY: (keyOW && keyOW.value.trim()) || ''
+    };
+  // Persist per-session (tab) for UX only
+  writeSessionKey('GEMINI', payload.GEMINI_API_KEY);
+  writeSessionKey('AAI', payload.ASSEMBLYAI_API_KEY);
+  writeSessionKey('MURF', payload.MURF_API_KEY);
+  writeSessionKey('TAVILY', payload.TAVILY_API_KEY);
+  writeSessionKey('OW', payload.OPENWEATHER_API_KEY);
+    try {
+      const res = await fetch(`/settings/${encodeURIComponent(sessionId)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) throw new Error('Save failed');
+      closeSettings();
+      if (llmStatus) { llmStatus.textContent = 'Settings saved for this session'; setTimeout(()=>{ if (llmStatus.textContent === 'Settings saved for this session') llmStatus.textContent=''; }, 2000); }
+    } catch(e) {
+      if (llmStatus) { llmStatus.textContent = 'Settings save error'; setTimeout(()=>{ if (llmStatus.textContent === 'Settings save error') llmStatus.textContent=''; }, 2500); }
+    }
+  }
+  settingsSave?.addEventListener('click', saveSettings);
+
   // Recording state
   let echoRecorder = null;
   let echoChunks = [];
@@ -357,7 +460,7 @@ function playAgentAudio(url, force = false) {
       return;
     }
     try {
-      streamWS = new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/ws');
+  streamWS = new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/ws?session_id=' + encodeURIComponent(sessionId));
       streamWS.binaryType = 'arraybuffer';
       streamWS.onopen = () => console.log('[stream] ws open');
       streamWS.onclose = () => console.log('[stream] ws close');

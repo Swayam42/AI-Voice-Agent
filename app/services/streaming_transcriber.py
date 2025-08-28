@@ -6,7 +6,7 @@ from assemblyai.streaming.v3 import (
     StreamingEvents, BeginEvent, TurnEvent,
     TerminationEvent, StreamingError
 )
-aai.settings.api_key = os.getenv("ASSEMBLYAI_API_KEY", "")
+default_api_key = os.getenv("ASSEMBLYAI_API_KEY", "")
 def on_begin(self, event: BeginEvent):
     print(f"Session started: {event.id}")
 def make_on_turn(partial_callback=None, final_callback=None):
@@ -36,10 +36,11 @@ def on_error(self, error: StreamingError):
     print("Error:", error)
 
 class AssemblyAIStreamingTranscriber:
-    def __init__(self, sample_rate=16000, partial_callback=None, final_callback=None):
+    def __init__(self, sample_rate=16000, partial_callback=None, final_callback=None, api_key: str | None = None):
+        key = api_key or default_api_key
         self.client = StreamingClient(
             StreamingClientOptions(
-                api_key=aai.settings.api_key, api_host="streaming.assemblyai.com")
+                api_key=key, api_host="streaming.assemblyai.com")
         )
         self.client.on(StreamingEvents.Begin, on_begin)
         self.client.on(StreamingEvents.Turn, make_on_turn(partial_callback, final_callback))

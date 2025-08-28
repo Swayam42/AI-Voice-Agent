@@ -158,12 +158,24 @@ class GeminiClient:
                 time.sleep(0.4 * attempt)
         return "Sorry, I couldn't process that right now. Please try rephrasing."
 
-    def chat(self, user_text: str, history: Optional[list[dict[str, str]]] = None) -> str:
-        """Chat with optional tool use. Lets Gemini decide to call web_search() when needed.
+    def chat(self, user_text: str, history: Optional[list[dict[str, str]]] = None, overrides: Optional[Dict[str, str]] = None) -> str:
+        """Chat with optional tool use and per-call API key overrides.
 
         history: list of {role: 'user'|'assistant', content: str}
+        overrides: optional dict with keys like GEMINI_API_KEY, TAVILY_API_KEY, OPENWEATHER_API_KEY
         """
         global API_KEY, _configured
+
+        overrides = overrides or {}
+        # Configure Gemini (override key takes precedence)
+        override_key = overrides.get("GEMINI_API_KEY") if isinstance(overrides, dict) else None
+        if override_key:
+            try:
+                genai.configure(api_key=override_key)
+                _configured = True
+                API_KEY = override_key
+            except Exception as e:
+                logger.error("Override Gemini config failed: %s", e)
         if not _configured:
             api = API_KEY or os.getenv("GEMINI_API_KEY")
             if api:
@@ -175,8 +187,26 @@ class GeminiClient:
             if not _configured:
                 return "LLM API key missing. Configure GEMINI_API_KEY."
 
-        tavily = self._ensure_tavily()
-        weather = self._ensure_weather()
+        # Tool clients (allow per-call overrides)
+        tavily: Optional["TavilySearch"]
+        weather: Optional["OpenWeather"]
+        if overrides.get("TAVILY_API_KEY") and TavilySearch is not None:
+            try:
+                tavily = TavilySearch(api_key=overrides.get("TAVILY_API_KEY"))
+            except Exception as e:
+                logger.warning("Tavily override unavailable: %s", e)
+                tavily = None
+        else:
+            tavily = self._ensure_tavily()
+        if overrides.get("OPENWEATHER_API_KEY") and OpenWeather is not None:
+            try:
+                weather = OpenWeather(api_key=overrides.get("OPENWEATHER_API_KEY"))
+            except Exception as e:
+                logger.warning("OpenWeather override unavailable: %s", e)
+                weather = None
+        else:
+            weather = self._ensure_weather()
+
         # Build a tool-aware model instance with persona as system instruction
         model = genai.GenerativeModel(
             self.model_name,
@@ -185,7 +215,7 @@ class GeminiClient:
             system_instruction=get_chanakya_persona(),
         )
 
-        # Build contents
+        # Build contents array
         contents: list[dict[str, Any]] = []
         if history:
             for msg in history[-8:]:
@@ -194,15 +224,14 @@ class GeminiClient:
                     contents.append({"role": "model", "parts": [{"text": msg.get("content", "")} ]})
                 else:
                     contents.append({"role": "user", "parts": [{"text": msg.get("content", "")} ]})
-        # Avoid duplicating the latest user message if present in history
         if not (history and history[-1].get("role") == "user" and history[-1].get("content") == user_text):
             contents.append({"role": "user", "parts": [{"text": user_text}]})
 
-        # Loop to satisfy tool calls automatically (max 2 tools to avoid loops)
+        # Tool-calling loop (max 2 tool calls)
         last_response: Optional[Any] = None
         for _ in range(2):
             last_response = model.generate_content(contents)
-            # Check for tool calls
+            # Parse tool calls
             calls = []
             try:
                 for cand in getattr(last_response, "candidates", []) or []:
@@ -212,7 +241,6 @@ class GeminiClient:
                         if fc:
                             calls.append(fc)
             except Exception:
-                # Fallback property
                 calls = getattr(last_response, "function_calls", None) or []
             if not calls:
                 break
@@ -220,10 +248,8 @@ class GeminiClient:
                 logger.info("[LLM] function_calls=%s", [getattr(c, 'name', '') for c in calls])
             except Exception:
                 pass
-            # Execute each call and append tool results
             for call in calls:
                 fn_name = getattr(call, "name", "")
-                # args may be dict-like or object with .args
                 args = getattr(call, "args", {}) or {}
                 tool_output: Dict[str, Any] = {"error": "tool not found"}
                 if fn_name == "web_search":
@@ -264,7 +290,6 @@ class GeminiClient:
                     }
                 )
 
-        # Return final text
         final_text = (getattr(last_response, "text", "") or "").strip() if last_response else ""
         return final_text or "I couldn't find the answer."
 
