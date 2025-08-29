@@ -39,6 +39,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const keyMurf = document.getElementById('keyMurf');
   const keyTavily = document.getElementById('keyTavily');
   const keyOW = document.getElementById('keyOW');
+  const settingsPromptMsg = document.getElementById('settingsPromptMsg');
   // Optional UI sounds (place files in /static/sounds)
   const uiSoundStart = new Audio('/static/sounds/mic_start.mp3');
   const uiSoundStop = new Audio('/static/sounds/mic_stop.mp3');
@@ -303,6 +304,50 @@ function playAgentAudio(url, force = false) {
   }
   settingsSave?.addEventListener('click', saveSettings);
 
+  // --- Deployment mode: Require users to provide their own API keys ---
+  function getCurrentKeys() {
+    return {
+      GEMINI: readSessionKey('GEMINI') || (keyGemini && keyGemini.value.trim()) || '',
+      AAI: readSessionKey('AAI') || (keyAAI && keyAAI.value.trim()) || '',
+      MURF: readSessionKey('MURF') || (keyMurf && keyMurf.value.trim()) || '',
+      TAVILY: readSessionKey('TAVILY') || (keyTavily && keyTavily.value.trim()) || '',
+      OW: readSessionKey('OW') || (keyOW && keyOW.value.trim()) || ''
+    };
+  }
+
+  function requireKeysOrPrompt(feature) {
+    const keys = getCurrentKeys();
+    const missing = [];
+    // Minimum keys by feature
+    if (feature === 'mic') {
+      if (!keys.AAI) missing.push('AssemblyAI');
+      if (!keys.GEMINI) missing.push('Gemini');
+      if (!keys.MURF) missing.push('Murf');
+    } else if (feature === 'tts') {
+      if (!keys.MURF) missing.push('Murf');
+    } else if (feature === 'echo') {
+      if (!keys.MURF) missing.push('Murf');
+    }
+    // Optional tools; uncomment to enforce
+    // if (!keys.TAVILY) missing.push('Tavily');
+    // if (!keys.OW) missing.push('OpenWeather');
+
+    if (missing.length > 0) {
+      if (settingsPromptMsg) {
+        settingsPromptMsg.style.display = 'block';
+        settingsPromptMsg.textContent = `Please provide your API keys to start: ${missing.join(', ')}`;
+      }
+      openSettings();
+      // Focus first empty field for convenience
+      const order = [keyAAI, keyGemini, keyMurf, keyTavily, keyOW];
+      for (const el of order) { if (el && !el.value.trim()) { try { el.focus(); } catch(_){} break; } }
+      return false;
+    }
+    // Hide any previous prompt
+    if (settingsPromptMsg) { settingsPromptMsg.style.display = 'none'; settingsPromptMsg.textContent = ''; }
+    return true;
+  }
+
   // Recording state
   let echoRecorder = null;
   let echoChunks = [];
@@ -367,6 +412,7 @@ function playAgentAudio(url, force = false) {
   // Sidebar: TTS
   async function handleTtsGenerate() {
     if (!ttsText || !ttsAudio || !ttsStatus) return;
+  if (!requireKeysOrPrompt('tts')) { return; }
     const text = ttsText.value.trim();
     if (!text) {
       ttsStatus.textContent = 'Enter text';
@@ -398,6 +444,7 @@ function playAgentAudio(url, force = false) {
 
   // Sidebar: Echo
   function toggleEcho() {
+  if (!requireKeysOrPrompt('echo')) { return; }
     if (isEchoRecording) {
       echoRecorder && echoRecorder.state !== 'inactive' && echoRecorder.stop();
       return;
@@ -448,6 +495,7 @@ function playAgentAudio(url, force = false) {
   let streaming = false;
 
   async function toggleMic() {
+  if (!requireKeysOrPrompt('mic')) { return; }
     unlockAudioIfNeeded();
     if (streaming) {
       try { streamRecorder && streamRecorder.state === 'recording' && streamRecorder.stop(); } catch(_){}
