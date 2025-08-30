@@ -23,11 +23,11 @@ Natural, voice‑first conversational AI inspired by Acharya Chanakya: Speak →
 - Persistent in‑memory session history (per browser session id)
 - Real‑time web search via Tavily (Gemini Function Calling)
 - WebSocket live transcripts + streamed TTS playback
+- Public demo safety: features are gated until users provide their own API keys (no shared secrets)
 - Sidebar Tools:
   - Text to Speech generator (choose text → Murf voice output)
   - Echo Bot (record → transcribe → re‑speak your words in another voice)
-- Replay last AI audio + chat bubble UI
-- Clean, minimal vanilla JS frontend (no heavy frameworks)
+- Keyboard shortcut: press "m" to toggle mic on/off
 
 ## 🧠 Architecture Flow
 
@@ -36,7 +36,7 @@ Natural, voice‑first conversational AI inspired by Acharya Chanakya: Speak →
 3. AssemblyAI transcribes bytes → text
 4. Chat history compiled into a Gemini prompt
 5. Gemini generates assistant reply
-6. Murf API converts reply text to speech (voice: en-US-ken)
+6. Murf API converts reply text to speech (default voice: en-US-charles)
 7. Frontend auto‑plays the returned audio & renders chat bubbles
 
 ```
@@ -74,14 +74,14 @@ app/
 │       └── mic_stop.mp3
 ├── uploads/               # (Optional) temp upload storage placeholder
 requirements.txt           # Dependencies
-.env                       # Secret API keys (NOT committed)
+.env                       # Optional server fallback keys (NOT committed)
 .gitignore                 # Ignore rules
 README.md                  # This file
 ```
 
 ## 🔑 Environment Variables (.env)
 
-Create a `.env` file in the project root:
+Create a `.env` file in the project root (optional; for local fallback):
 
 ```
 ASSEMBLYAI_API_KEY=your_assemblyai_key
@@ -89,18 +89,18 @@ GEMINI_API_KEY=your_gemini_key
 MURF_API_KEY=your_murf_key
 TAVILY_API_KEY=your_tavily_key
 OPENWEATHER_API_KEY=your_openweather_key
-
-# Optional UI/voice tuning
-MAX_UI_ANSWER_CHARS=120   # 0 to disable trimming
-MAX_TTS_CHARS=240         # per TTS chunk for Murf WS
 ```
+
+Notes:
+
+- For public deployments, users must enter their own keys via the in‑app Settings modal. Server keys are optional fallback for private/dev.
+- Do not commit `.env`. Share `.env.example` with placeholders instead.
 
 ### Where to get API keys
 
 - AssemblyAI: https://www.assemblyai.com/app/account
 - Gemini (Google AI Studio): https://aistudio.google.com/app/apikey
 - Murf AI: https://murf.ai/api (Account settings → API key)
-- Tavily: https://app.tavily.com/ (Dashboard → API Keys)
 - Tavily: https://app.tavily.com/ (Dashboard → API Keys)
 - OpenWeather: https://home.openweathermap.org/api_keys
 
@@ -125,7 +125,7 @@ cd app && python main.py
 http://127.0.0.1:8000/
 
 # (Alt) Use uvicorn directly for auto-reload (optional)
-# uvicorn app.main:app --reload
+# cd app && uvicorn main:app --reload
 ```
 
 ## 📡 Key Endpoints
@@ -152,6 +152,7 @@ http://127.0.0.1:8000/
 - MediaRecorder + multipart upload for low-latency voice capture
 - Autoplay + replay logic with audio unlock and retry
 - Structured Pydantic responses for clearer API contracts
+- Per‑session key overrides wired from UI → backend (no keys echoed back)
 
 ## 🔄 Session Handling
 
@@ -159,6 +160,7 @@ Browser session id is appended to the URL (query param). History is stored in an
 
 ## 🛡️ Notes / Limits
 
+- Public mode gates features until users provide keys (Settings auto‑opens on first use)
 - Not production-hardened (no auth, rate limiting, or persistence yet)
 - API keys must remain secret (.env not committed)
 - In-memory history resets on server restart (swap with Redis/DB later)
@@ -168,9 +170,9 @@ Browser session id is appended to the URL (query param). History is stored in an
 
 Prototype phase — feel free to open issues with ideas (latency, UI/UX, voice packs, multilingual support). PRs welcome after discussion.
 
-<!--## 📄 License
+## 📄 License
 
-Add a LICENSE file (MIT recommended) if you plan to open source formally.-->
+This project is licensed under the MIT License. See [LICENSE.txt](LICENSE.txt) for details.
 
 ## 🙌 Acknowledgements
 
