@@ -1,6 +1,9 @@
 fastapi==0.111.0
 uvicorn==0.30.0
 python-dotenv==1.0.1
+dependabot/pip/jinja2-3.1.6
+requests==2.32.3
+jinja2==3.1.6
 requests==2.32.4
 jinja2==3.1.4
 python-multipart==0.0.18
