@@ -47,7 +47,7 @@ class AssemblyAIStreamingTranscriber:
         self.client.on(StreamingEvents.Termination, on_termination)
         self.client.on(StreamingEvents.Error, on_error)
         self.client.connect(StreamingParameters(
-            sample_rate=sample_rate, format_turns=True))
+            sample_rate=sample_rate, format_turns=True, speech_model="best"))
     def stream_audio(self, audio_chunk: bytes):
         self.client.stream(audio_chunk)
     def close(self):
