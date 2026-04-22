@@ -326,6 +326,16 @@ async def home(request: Request):
     except Exception as e:
         return HTMLResponse(f"Error loading page: {str(e)}", status_code=500)
 
+@app.get("/api/keys-status")
+async def check_keys_status():
+    return {
+        "gemini": bool(os.getenv("GEMINI_API_KEY")),
+        "aai": bool(os.getenv("ASSEMBLYAI_API_KEY")),
+        "murf": bool(os.getenv("MURF_API_KEY")),
+        "tavily": bool(os.getenv("TAVILY_API_KEY")),
+        "openweather": bool(os.getenv("OPENWEATHER_API_KEY"))
+    }
+
 @app.post("/generate_audio", response_model=TextToSpeechResponse)
 async def generate_audio(payload: TextToSpeechRequest):
     logger.info("TTS generate request: %s chars", len(payload.text))

@@ -211,7 +211,7 @@ function playAgentAudio(url, force = false) {
     return sid;
   }
   const sessionId = ensureSessionId();
-
+  checkServerKeys();
   // Key storage helpers: persist per-session (survives hard refresh in this tab, resets when session_id changes)
   function readSessionKey(name){
     try { return sessionStorage.getItem(`KEY_${sessionId}_${name}`) || ''; } catch(_) { return ''; }
@@ -304,7 +304,22 @@ function playAgentAudio(url, force = false) {
   }
   settingsSave?.addEventListener('click', saveSettings);
 
-  // --- Deployment mode: Require users to provide their own API keys ---
+  // --- Server-side key detection (for public deployments) ---
+  let serverKeysAvailable = { gemini: false, aai: false, murf: false, tavily: false, openweather: false };
+
+  async function checkServerKeys() {
+    try {
+      const res = await fetch('/api/keys-status');
+      if (res.ok) {
+        serverKeysAvailable = await res.json();
+        hideSettingsIfServerConfigured(); // Hide settings if all keys are server-configured
+      }
+    } catch(e) {
+      console.log('Could not check server keys:', e);
+    }
+  }
+
+  // --- Deployment mode: Require users to provide their own API keys (unless server has them) ---
   function getCurrentKeys() {
     return {
       GEMINI: readSessionKey('GEMINI') || (keyGemini && keyGemini.value.trim()) || '',
@@ -318,19 +333,19 @@ function playAgentAudio(url, force = false) {
   function requireKeysOrPrompt(feature) {
     const keys = getCurrentKeys();
     const missing = [];
-    // Minimum keys by feature
+    // Minimum keys by feature (check if either user-provided or server-configured)
     if (feature === 'mic') {
-      if (!keys.AAI) missing.push('AssemblyAI');
-      if (!keys.GEMINI) missing.push('Gemini');
-      if (!keys.MURF) missing.push('Murf');
+      if (!keys.AAI && !serverKeysAvailable.aai) missing.push('AssemblyAI');
+      if (!keys.GEMINI && !serverKeysAvailable.gemini) missing.push('Gemini');
+      if (!keys.MURF && !serverKeysAvailable.murf) missing.push('Murf');
     } else if (feature === 'tts') {
-      if (!keys.MURF) missing.push('Murf');
+      if (!keys.MURF && !serverKeysAvailable.murf) missing.push('Murf');
     } else if (feature === 'echo') {
-      if (!keys.MURF) missing.push('Murf');
+      if (!keys.MURF && !serverKeysAvailable.murf) missing.push('Murf');
     }
     // Optional tools; uncomment to enforce
-    // if (!keys.TAVILY) missing.push('Tavily');
-    // if (!keys.OW) missing.push('OpenWeather');
+    // if (!keys.TAVILY && !serverKeysAvailable.tavily) missing.push('Tavily');
+    // if (!keys.OW && !serverKeysAvailable.openweather) missing.push('OpenWeather');
 
     if (missing.length > 0) {
       if (settingsPromptMsg) {
@@ -346,6 +361,16 @@ function playAgentAudio(url, force = false) {
     // Hide any previous prompt
     if (settingsPromptMsg) { settingsPromptMsg.style.display = 'none'; settingsPromptMsg.textContent = ''; }
     return true;
+  }
+
+  // Optional: Hide settings button for public deployments where all keys are server-configured
+  function hideSettingsIfServerConfigured() {
+    const allKeysAvailable = serverKeysAvailable.gemini && 
+                             serverKeysAvailable.aai && 
+                             serverKeysAvailable.murf;
+    if (allKeysAvailable && settingsBtn) {
+      settingsBtn.style.display = 'none'; // Hide settings button for public deployments
+    }
   }
 
   // Recording state
