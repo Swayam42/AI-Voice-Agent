@@ -15,3 +15,4 @@ venv/
 
 # Project artifacts
 uploads/
+.github/
